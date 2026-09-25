@@ -130,6 +130,19 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
           },
         });
       }
+      // A model that puts flags inside `cmd` AND also passes `args` is
+      // contradictory: either the cmd field is a full command line (flags
+      // belong there, args must be empty) or a bare binary (flags belong
+      // in args). A direct spawn of `"wc -c"` fails ENOENT with no hint;
+      // reject up front with a message the model can act on.
+      if (/\s/.test(cmd.trim()) && rawArgList.length > 0) {
+        throw new Error(
+          `os.shell.run: \`cmd\` must be a bare binary name when \`args\` is non-empty. ` +
+          `Got cmd=${JSON.stringify(cmd)} with args=${JSON.stringify(rawArgList)}. ` +
+          `Either put flags inside cmd and pass an empty args (e.g. {"cmd":"wc -c","args":[]}), ` +
+          `or split them (e.g. {"cmd":"wc","args":["-c","FILE"]}).`
+        );
+      }
       const cwd =
         typeof rawArgs.cwd === "string" && rawArgs.cwd.length > 0
           ? resolveUserPath(rawArgs.cwd, ctx.workingDir)
