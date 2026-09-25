@@ -161,6 +161,7 @@ const TOOLS_FULL_BODY_WHEN_FRESH: ReadonlySet<string> = new Set([
  * (400 chars) so the historical "summary" footprint stays unchanged.
  */
 const TOOL_RESULT_HISTORY_CAP_CHARS = 400;
+const READ_HISTORY_CAP_CHARS = 2000;
 
 export interface RenderTurnOptions {
   /**
@@ -170,6 +171,14 @@ export interface RenderTurnOptions {
    * — applies the standard render cap).
    */
   inCurrentMacroTurn?: boolean;
+  /**
+   * Set by the caller when this result's content is byte-identical to
+   * an earlier result in the same prompt. When set, `renderToolResultBody`
+   * returns a short marker pointing at the original turn instead of the
+   * full body — saving the duplicate bytes while telling the model the
+   * content is still earlier in the transcript.
+   */
+  duplicateOfTurnIndex?: number;
   /**
    * File line an `os.fs.read` result starts at — its call's `offset`, or 1
    * when the call had none. Lets a read that is cut at render time name the
@@ -218,6 +227,9 @@ export function renderToolResultBody(
   turn: Extract<ConversationTurn, { kind: "tool_result" }>,
   options: RenderTurnOptions,
 ): string {
+  if (options.duplicateOfTurnIndex !== undefined) {
+    return `[duplicate tool-result-v1: content already present at turn ${options.duplicateOfTurnIndex}]`;
+  }
   if (isFreshGogShellResult(turn, options)) {
     return capSummary(turn.summary, GOG_TOOL_RESULT_RENDER_CAP_CHARS);
   }
@@ -233,12 +245,12 @@ export function renderToolResultBody(
   if (turn.tool === "fusion.delegate" && options.inCurrentMacroTurn === true) {
     return turn.summary;
   }
-  if (turn.tool === "os.fs.read") {
-    return capReadSummary(
-      turn.summary,
-      TOOL_RESULT_RENDER_CAP_CHARS,
-      options.readStartLine,
-    );
+  // Fresh reads render up to TOOL_RESULT_RENDER_CAP_CHARS so the model can act on what it just read. Once the macro-turn closes, the read drops to READ_HISTORY_CAP_CHARS — a preview with capReadSummary's paging hint retained, so the model knows how to page if it needs more.
+  if (turn.tool === "os.fs.read" || turn.tool === "os.fs.read_document") {
+    const cap = options.inCurrentMacroTurn === true
+      ? TOOL_RESULT_RENDER_CAP_CHARS
+      : READ_HISTORY_CAP_CHARS;
+    return capReadSummary(turn.summary, cap, options.readStartLine);
   }
   return capSummary(turn.summary, TOOL_RESULT_RENDER_CAP_CHARS);
 }

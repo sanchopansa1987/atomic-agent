@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PromptTurn } from "../llm/provider/completion-types.js";
 import type { SessionState } from "../session/session-state.js";
 import {
@@ -103,9 +104,16 @@ function* packedTurnRenderOptions(
   // call order (a batch may list several calls before their results), so a
   // read cut at render time can name the `offset` of the rest.
   let pendingReadStarts: (number | undefined)[] = [];
+  // Dedup: content-hash -> index of first turn in this prompt that carried
+  // that result. A repeat (same tool + status + identical summary) renders
+  // as a marker pointing at the earlier turn instead of the full body.
+  // Only applies outside the current macro-turn; a result the model is
+  // actively working with stays whole.
+  const seenToolResults = new Map<string, number>();
   for (let i = 0; i < packed.visibleTurns.length; i += 1) {
     const turn = packed.visibleTurns[i]!;
-    const options: RenderTurnOptions = { inCurrentMacroTurn: i >= currentStart };
+    const inCurrentMacroTurn = i >= currentStart;
+    const options: RenderTurnOptions = { inCurrentMacroTurn };
     if (turn.kind === "user" || turn.kind === "assistant_reply") {
       pendingReadStarts = [];
     } else if (turn.kind === "assistant_tool_call" && turn.tool === "os.fs.read") {
@@ -113,6 +121,21 @@ function* packedTurnRenderOptions(
     } else if (turn.kind === "tool_result" && turn.tool === "os.fs.read") {
       const readStartLine = pendingReadStarts.shift();
       if (readStartLine !== undefined) options.readStartLine = readStartLine;
+    }
+    if (turn.kind === "tool_result" && !inCurrentMacroTurn) {
+      const hash = createHash("sha256");
+      hash.update(turn.tool);
+      hash.update("\u0000");
+      hash.update(turn.status);
+      hash.update("\u0000");
+      hash.update(turn.summary);
+      const key = hash.digest("hex");
+      const prior = seenToolResults.get(key);
+      if (prior !== undefined) {
+        options.duplicateOfTurnIndex = prior;
+      } else {
+        seenToolResults.set(key, i);
+      }
     }
     yield [turn, options];
   }
