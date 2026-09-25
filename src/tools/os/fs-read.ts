@@ -43,7 +43,14 @@ function parseArgs(rawArgs: Record<string, unknown>): ReadArgs {
 export const osFsReadTool: ToolDefinition = {
   name: "os.fs.read",
   description:
-    "Read a UTF-8 text file. Paths may be relative to the session working directory. Supports line-range reads via `offset` (1-indexed, negative counts from end) and `limit`, plus optional `LINE_NUMBER|` prefixes.",
+    "Read a UTF-8 text file. Paths may be relative to the session working " +
+    "directory. `offset` and `limit` select LINE numbers (1-based; negative " +
+    "offset counts from the end), but only among the lines present in the " +
+    "first `maxBytes` bytes of the file (default 64KB, up to the file size). " +
+    "An `offset` past that readable-prefix raises an error naming the " +
+    "readable line count — increase `maxBytes` to reach deeper into a large " +
+    "file, or omit `offset` to read from the top. `lineNumbers: true` " +
+    "prefixes each returned line with `N|`.",
   readonly: true,
   async run(rawArgs, ctx) {
     const args = parseArgs(rawArgs);
@@ -151,6 +158,22 @@ async function readByLines(
 
   const total = allLines.length;
   const { startIndex, limit } = resolveRange(total, args.offset, args.limit);
+  // An offset past the readable prefix used to return empty output with no
+  // explanation — the model then guessed whether the file was short, the
+  // offset was wrong, or the tool was misbehaving. It cycled through several
+  // interpretations across a dozen reasoning blocks. Raise instead, naming
+  // the readable line count and the file's true size, so the next step is
+  // unambiguous: increase maxBytes or drop the offset.
+  if (total > 0 && startIndex >= total) {
+    const maxBytesCap = args.maxBytes;
+    throw new Error(
+      `os.fs.read: offset ${args.offset} is past the readable-prefix of ${absolute}. ` +
+        `The file is ${size} bytes; this call reads at most ${maxBytesCap} bytes ` +
+        `from the start, which contains ${total} lines. ` +
+        `Pass a larger maxBytes (up to ${size}) to reach deeper lines, ` +
+        `or omit offset to read from the top of the file.`,
+    );
+  }
   const sliced = allLines.slice(startIndex, startIndex + limit);
   const body = args.lineNumbers
     ? sliced
