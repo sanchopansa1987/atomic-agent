@@ -1424,6 +1424,17 @@ async function executeStepInner(
       }
     }
     if (!parsed.ok) {
+      if (process.env.ATOMIC_DEBUG_REPLY_EMPTY) {
+        process.stderr.write(
+          "\n[REPLY-EMPTY DEBUG] rawLength=" + completion.content.length + "\n" +
+          "--- raw content ---\n" +
+          completion.content +
+          "\n--- end raw ---\n" +
+          "--- parsed.error ---\n" +
+          (parsed.ok ? "(parsed is ok?!)" : parsed.error.message) +
+          "\n--- end error ---\n",
+        );
+      }
       deps.logger?.warn("tool-call parse failed after retry", {
         sessionId: ctx.session.id,
         stepIndex: ctx.stepIndex,
