@@ -179,6 +179,12 @@ export interface BatchExecutionContext {
   /** The turn's tool role, forwarded to every `ToolContext` (see `tool-roles.ts`). */
   toolRole?: ToolRole;
   /**
+   * The step's full unfiltered descriptor list, forwarded to every
+   * `ToolContext` so `tool.view` can resolve runtime (MCP) tools
+   * that never enter the static built-in map.
+   */
+  toolDescriptors?: readonly import("../prompt/stable-prefix.js").ToolDescriptor[];
+  /**
    * Names of skills already present in `SessionState.loadedSkills`. A
    * `skill.view` call targeting one of these is short-circuited with a
    * terse "already loaded" result instead of re-reading and re-dumping
@@ -440,6 +446,7 @@ export async function executeBatch(
         stepIndex: ctx.stepIndex,
         signal: ctx.signal,
         ...(ctx.toolRole !== undefined ? { toolRole: ctx.toolRole } : {}),
+        ...(ctx.toolDescriptors !== undefined ? { toolDescriptors: ctx.toolDescriptors } : {}),
         ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
       });
     } catch (err) {

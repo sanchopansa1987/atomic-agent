@@ -1183,6 +1183,22 @@ export class ChatOrchestrator {
           : { maxSteps: this.options.maxSteps }),
         signal: controller.signal,
         origin: "tui",
+        // Interactive TUI sessions get a minimal tool surface. The
+        // wider 'builder' set (and the full 127-tool catalog) blows
+        // the 6k context cap before the first turn. Everything not
+        // listed here stays reachable via tool.view on demand.
+        toolRole: "builder",
+        toolFilter: (name) => [
+          "os.fs.read",
+          "os.fs.list",
+          "os.fs.glob",
+          "os.fs.grep",
+          "os.fs.write",
+          "os.fs.edit",
+          "os.shell.run",
+          "tool.view",
+          "reply",
+        ].includes(name),
       });
       const attached = this.session?.id === turnSessionId;
       // A detached turn's result must not clobber the thread the

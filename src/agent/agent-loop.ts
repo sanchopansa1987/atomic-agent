@@ -1032,12 +1032,16 @@ export class AgentLoop {
       options.providerId !== undefined && this.deps.resolveLlmSlice
         ? this.deps.resolveLlmSlice(options.providerId)
         : null;
-    const visibleToolDescriptors = (): readonly ToolDescriptor[] => {
-      const filter = options.toolFilter;
-      return filter
-        ? this.deps.toolDescriptors.filter(({ name }) => filter(name))
-        : this.deps.toolDescriptors;
-    };
+    // IMPORTANT: StepContext.toolDescriptors must be the FULL catalog.
+    // `toolFilter` is a prompt-surface concern only (it decides which
+    // tools render in `### tools` vs the "also available via tool.view"
+    // line).  `tool.view` resolves names against this list, so narrowing
+    // it here made every filtered-out tool unreachable — MCP tools and
+    // out-of-role built-ins included.  The filter rides on
+    // `options.toolFilter` into the prompt build; the descriptor list
+    // stays complete.
+    const visibleToolDescriptors = (): readonly ToolDescriptor[] =>
+      this.deps.toolDescriptors;
 
     state = await refreshMemoryContext(this.deps, state, options);
 

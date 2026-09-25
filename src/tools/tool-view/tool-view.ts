@@ -26,13 +26,35 @@ export function buildToolViewTool(): ToolDefinition {
       if (typeof name !== "string" || name.length === 0) {
         throw new Error("tool.view: `name` must be a non-empty string");
       }
-      const d = getToolDescriptorByName(name);
+      if (process.env.ATOMIC_DEBUG_TOOLVIEW) {
+        process.stderr.write(
+          `[tool.view DEBUG] name=${name} ` +
+          `builtin=${!!getToolDescriptorByName(name)} ` +
+          `ctx.toolDescriptors.length=${ctx.toolDescriptors?.length ?? "undefined"} ` +
+          `hasMatch=${!!ctx.toolDescriptors?.find((x) => x.name === name)}\n`,
+        );
+      }
+      const builtinDescriptor = getToolDescriptorByName(name);
+      // Fallback for MCP/runtime tools: they never enter the static
+      // built-in map, but they DO appear on the prompt's "also
+      // available via tool.view" line when they fall outside the
+      // current role.  Without this lookup, `tool.view` refused every
+      // MCP tool as "unknown".
+      const d =
+        builtinDescriptor ??
+        ctx.toolDescriptors?.find((x) => x.name === name);
       if (!d) {
         throw new Error(`tool.view: unknown tool: ${name}`);
       }
-      const role = ctx.toolRole ?? "full";
+      const role = ctx.toolRole ?? "builder";
       const outsideRole = !roleAdmits(role, d.name);
-      if (d.tier !== "rare" && !outsideRole) {
+      // Runtime (MCP) tools always come back from the descriptor
+      // builder at `tier: "frequent"`, so the rare/extras check would
+      // refuse them even when they legitimately sit on the extras
+      // line.  For those, only the role check matters — if the role
+      // doesn't admit it, it's on the extras line and loadable.
+      const isRuntimeTool = builtinDescriptor === undefined;
+      if (!isRuntimeTool && d.tier !== "rare" && !outsideRole) {
         throw new Error(
           `tool.view: "${name}" is not in the # extras list (full schema is already in the stable prefix)`,
         );

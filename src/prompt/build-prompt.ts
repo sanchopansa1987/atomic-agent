@@ -142,6 +142,7 @@ export function buildPrompt(input: BuildPromptInput): BuiltPrompt {
 
   const stablePrefix = buildStablePrefix({
     toolDescriptors: input.toolDescriptors,
+    ...(input.toolFilter !== undefined ? { toolFilter: input.toolFilter } : {}),
     capabilities: input.capabilities,
     skillCatalog: input.skillCatalog,
     reasoningSystemToken: suppressPrefill

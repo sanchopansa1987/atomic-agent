@@ -635,7 +635,13 @@ async function executeStepInner(
       : roleToolDescriptors;
   const promptInput: BuildPromptInput = {
     session: ctx.session,
+    // Pass the FULL descriptor list to `buildPrompt`; the role
+    // partition + `toolFilter` narrow it at render time in
+    // `stable-prefix.ts`.  Passing the role-narrowed `stepDescriptors`
+    // here left the "also available via tool.view" line empty, so the
+    // prompt never advertised the ~115 deferred tools.
     toolDescriptors: stepToolDescriptors,
+    ...(ctx.toolFilter !== undefined ? { toolFilter: ctx.toolFilter } : {}),
     capabilities: ctx.capabilities,
     skillCatalog: ctx.skillCatalog,
     currentDate: formatCurrentDate(new Date()),
@@ -1651,6 +1657,7 @@ async function executeStepInner(
         }
       : {}),
     ...(ctx.toolRole !== undefined ? { toolRole: ctx.toolRole } : {}),
+    toolDescriptors: stepToolDescriptors,
     ...(batch.maxWaveSize !== undefined
       ? { maxWaveSize: batch.maxWaveSize }
       : {}),

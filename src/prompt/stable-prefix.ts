@@ -115,6 +115,12 @@ export interface StablePrefixInput {
    * byte-identical to before roles existed.
    */
   toolRole?: ToolRole;
+  /**
+   * See `BuildPromptInput.toolFilter`.  Applied after the role
+   * partition so filtered-out tools land in the `also available`
+   * line rather than disappearing.
+   */
+  toolFilter?: (name: string) => boolean;
 }
 
 /** Header of the out-of-role names line — pinned by tests, read by the model. */
@@ -248,10 +254,18 @@ export function buildStablePrefix(input: StablePrefixInput): string {
   // have, the rest collapse to one line of names. `full` (or no role)
   // puts everything on the inside, so the block below is byte-identical
   // to the pre-role output — `outside` is empty and adds no line.
-  const { inRole, outside } = partitionByRole(
+  const { inRole: roleIn, outside: roleOut } = partitionByRole(
     input.toolRole,
     input.toolDescriptors,
   );
+  // `toolFilter` narrows what renders in-prompt without hiding the
+  // rest — filtered-out role tools join `roleOut` so `tool.view` can
+  // still reach them via the "also available" line.
+  const filterFn = input.toolFilter;
+  const inRole = filterFn ? roleIn.filter((d) => filterFn(d.name)) : roleIn;
+  const outside = filterFn
+    ? [...roleOut, ...roleIn.filter((d) => !filterFn(d.name))]
+    : roleOut;
   const frequent: ToolDescriptor[] = [];
   const rare: ToolDescriptor[] = [];
   for (const d of inRole) {

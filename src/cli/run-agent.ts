@@ -289,6 +289,21 @@ async function runChatLoop(opts: ChatLoopOptions): Promise<SessionState> {
       ...(opts.maxSteps === undefined ? {} : { maxSteps: opts.maxSteps }),
       signal: opts.controller.signal,
       origin: "cli",
+      toolRole: "builder",
+        // Interactive CLI sessions get a minimal surface; everything else
+        // stays reachable via tool.view. Builder is a worker role — its
+        // FS/verify/mcp breadth is wrong for a REPL.
+        toolFilter: (name) => [
+          "os.fs.read",
+          "os.fs.list",
+          "os.fs.glob",
+          "os.fs.grep",
+          "os.fs.write",
+          "os.fs.edit",
+          "os.shell.run",
+          "tool.view",
+          "reply",
+        ].includes(name),
       eventHook: collector.onEvent,
     });
     session = result.session;

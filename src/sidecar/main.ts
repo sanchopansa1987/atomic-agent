@@ -324,6 +324,10 @@ export async function bootstrapSidecar(): Promise<{
         }
         return runtime.executeTurn(active.session, request.payload.text, {
           maxSteps: request.payload.maxSteps ?? runtime.config.agent.maxSteps,
+          toolRole: "builder",
+          // CLI sessions don't need 57 MCP tools preloaded; they stay
+          // reachable via tool.view.
+          toolFilter: (name) => !name.startsWith("mcp."),
           signal: active.controller.signal,
         });
       },

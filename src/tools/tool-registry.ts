@@ -23,6 +23,15 @@ export interface ToolContext {
    * nothing named.
    */
   readRoots?: readonly string[];
+  /**
+   * The step's full unfiltered tool descriptor list.  `tool.view`
+   * consults this as a fallback when the static built-in map misses —
+   * MCP tools are discovered at runtime and never enter
+   * `TOOL_DESCRIPTOR_BY_NAME`, so without this fallback a tool that
+   * the prompt advertises on its "also available via `tool.view`"
+   * line is unreachable.
+   */
+  toolDescriptors?: readonly import("../prompt/stable-prefix.js").ToolDescriptor[];
 }
 
 export interface ToolDefinition {

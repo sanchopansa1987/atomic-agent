@@ -46,6 +46,14 @@ export interface BuildPromptInput {
    */
   toolRole?: ToolRole;
   /**
+   * Per-turn descriptor filter applied at the prompt-surface level.
+   * Tools that pass stay in the `### tools` block; tools that fail
+   * move to the "also available via `tool.view`" one-liner.  The
+   * runtime still knows every tool — this only decides what the
+   * prompt lists in full vs as discoverable.
+   */
+  toolFilter?: (name: string) => boolean;
+  /**
    * Pre-formatted current date (see `formatCurrentDate`) rendered as a
    * `CURRENT DATE:` line in the variable tail just before `### respond`.
    * Lives in the tail, not the stable prefix, so it never affects
