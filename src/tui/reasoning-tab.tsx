@@ -8,6 +8,13 @@ interface ReasoningTabProps {
 }
 
 const LINE_CLIP = 10_000;
+/**
+ * Cap rendered lines per reasoning entry. An entry can be thousands of
+ * chars (some are 5k+), and Ink cannot reliably redraw a frame taller
+ * than the terminal \u2014 the "garbled panel" symptom. Slice each
+ * entry, keep the head (the plan) and mark the rest.
+ */
+const MAX_LINES_PER_ENTRY = 12;
 
 /**
  * Collect reasoning text preserved on finalized assistant messages. The live
@@ -76,7 +83,9 @@ export function ReasoningTab({
 }
 
 function ReasoningBlock({ entry }: { entry: ReasoningEntry }): ReactElement {
-  const lines = entry.text.split(/\r?\n/);
+  const allLines = entry.text.split(/\r?\n/);
+  const hidden = Math.max(0, allLines.length - MAX_LINES_PER_ENTRY);
+  const lines = hidden > 0 ? allLines.slice(0, MAX_LINES_PER_ENTRY) : allLines;
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text color="magenta" bold>
@@ -87,6 +96,11 @@ function ReasoningBlock({ entry }: { entry: ReasoningEntry }): ReactElement {
           {clip(line, LINE_CLIP)}
         </Text>
       ))}
+      {hidden > 0 ? (
+        <Text color="gray" dimColor>
+          {"\u2026 [" + hidden + " more lines]"}
+        </Text>
+      ) : null}
     </Box>
   );
 }

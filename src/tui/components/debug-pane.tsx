@@ -320,7 +320,12 @@ function ActiveDebugTab({
     case "world":
       return <WorldPanel state={state} />;
     case "reasoning":
-      return <ReasoningTab state={state} maxVisible={maxVisible} />;
+      // Reasoning entries can each be thousands of chars (models quote
+      // file listings into their scratchpad). Even with per-entry line
+      // slicing, N entries x 12 lines blows the terminal budget and Ink
+      // drifts. Cap at 2 entries so the tab fits comfortably on a small
+      // window.
+      return <ReasoningTab state={state} maxVisible={Math.min(maxVisible, 2)} />;
     case "logs":
       return <LogsTab state={state} maxVisible={maxVisible} />;
     case "tasks":
