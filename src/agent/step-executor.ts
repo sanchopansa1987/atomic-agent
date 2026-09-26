@@ -2332,7 +2332,25 @@ function replyFallbackBatch(
     getReasoningTagOptions(profile),
   );
   const text = extracted.body.trim();
-  if (text.length === 0) return null;
+  if (text.length === 0) {
+    // Durable BUG 3 fallback: some providers (auto:smart routes,
+    // DeepSeek-R1-style) put the whole answer in `reasoning_content`
+    // and leave `content` empty. Mirror the content-based guards: only
+    // prose degrades, only when it doesn't look like a botched JSON
+    // batch. The 4000-char cap rejects scratch CoT \u2014 a real answer
+    // that long is a different problem.
+    const channel =
+      typeof completion.reasoningContent === "string"
+        ? completion.reasoningContent.trim()
+        : "";
+    if (channel.length === 0) return null;
+    if (channel.startsWith("{") || channel.startsWith("[")) return null;
+    if (channel.length > 4000) return null;
+    return {
+      kind: "batch",
+      calls: [{ tool: "reply", args: { text: channel } }],
+    };
+  }
   // Only prose degrades. A body that opens a JSON value means the model
   // did try to emit a call and botched it (or the batch failed
   // validation) — echoing that literal back at the user would be worse
