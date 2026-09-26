@@ -2153,6 +2153,19 @@ function parseDepsFor(
  * Returns a `ToolCallBatch` that may carry a single call (legacy
  * shape) or N calls in batch-index order.
  */
+const TRAILING_TOOL_TAGS = /(?:\s*<\/(?:text|function|tool_call|function_calls|invoke|antml:invoke|antml:function_calls)>\s*)+$/;
+
+/**
+ * Some models (nemotron in particular) emit the closing tags of a
+ * tool-call XML format they were trained on but not the openers. Left
+ * in place, the tags leak into the reply text and get re-fed on the
+ * next turn as conversation history, reinforcing the pattern. Strip
+ * them at the point the reply is built.
+ */
+function stripTrailingToolTags(value: string): string {
+  return value.replace(TRAILING_TOOL_TAGS, "");
+}
+
 function tryParseToolCalls(
   completion: CompletionResult,
   profile: ModelProfile,
@@ -2250,7 +2263,7 @@ function tryParseToolCalls(
             calls: [
               {
                 tool: "reply",
-                args: { text: replyText },
+                args: { text: stripTrailingToolTags(replyText) },
                 ...(reasoning.length > 0 ? { reasoning } : {}),
               },
             ],
@@ -2348,7 +2361,7 @@ function replyFallbackBatch(
     if (channel.length > 4000) return null;
     return {
       kind: "batch",
-      calls: [{ tool: "reply", args: { text: channel } }],
+      calls: [{ tool: "reply", args: { text: stripTrailingToolTags(channel) } }],
     };
   }
   // Only prose degrades. A body that opens a JSON value means the model
@@ -2362,7 +2375,7 @@ function replyFallbackBatch(
     calls: [
       {
         tool: "reply",
-        args: { text },
+        args: { text: stripTrailingToolTags(text) },
         ...(reasoning.length > 0 ? { reasoning } : {}),
       },
     ],
