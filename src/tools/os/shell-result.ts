@@ -25,6 +25,19 @@ const GOG_COMPRESS_OPTIONS = {
   maxTailLines: 10_000,
 } as const;
 
+/**
+ * Non-gog shell output cap. 8000 chars is ~200 lines of typical output —
+ * enough for `ls -1`, most greps, and error traces, without letting a
+ * runaway command (`cat huge_file`, `find /`) eat the context window.
+ * Before this, the shell path inherited the compressor defaults (400
+ * chars / 12 lines), which chopped every listing to `[omitted N lines]`
+ * and forced models into unnecessary follow-up calls.
+ */
+const DEFAULT_COMPRESS_OPTIONS = {
+  maxSummaryLength: 8000,
+  maxTailLines: 500,
+} as const;
+
 /** What a result says about the command, fixed when it was started. */
 export interface ShellCommandFacts {
   cmd: string;
@@ -77,7 +90,7 @@ export function renderShellResult(input: ShellResultInput): CompressedToolResult
         guardReason: facts.guard.reason,
       },
     },
-    facts.gog ? GOG_COMPRESS_OPTIONS : {},
+    facts.gog ? GOG_COMPRESS_OPTIONS : DEFAULT_COMPRESS_OPTIONS,
   );
 }
 

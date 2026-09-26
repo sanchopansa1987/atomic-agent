@@ -79,7 +79,17 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
   return {
     name: "os.shell.run",
     description:
-      "Run an OS command in the session working directory. Prefer the structured form `{cmd, args:[...]}` (argv globs `*`/`?` are expanded). Shell metacharacters (`|`, `&&`, `;`, `>`, `<`, `$`, backticks) are interpreted via the OS subshell (`sh -c` on macOS/Linux, `cmd.exe /c` on Windows) — a full command line passed as `cmd` (e.g. `\"ffprobe -v quiet … f.mp3\"` or `\"pip3 list | grep foo\"`) runs as written. Do not use for deleting user files — use `os.fs.trash` unless the user explicitly requests permanent shell deletion. Runs through a pre-exec guard: safe commands run directly, risky commands require approval, catastrophic commands are blocked without execution. " +
+      "Run an OS command in the session working directory. " +
+      "REQUIRED SHAPE: `args` MUST be a JSON array of strings (e.g. `[\"-1\", \"foo\"]`), never a single string. " +
+      "When `args` is non-empty, `cmd` MUST be a bare binary name with no spaces or flags (e.g. `\"ls\"`, not `\"ls -p\"`). " +
+      "Do: `{cmd: \"ls\", args: [\"-1\", \"/path\"]}`. " +
+      "Do: `{cmd: \"ls -1 /path | head\"}` (full command line, omit `args`). " +
+      "Don't: `{cmd: \"ls -p\", args: [\"/path\"]}` (cmd has flags but args is non-empty). " +
+      "Don't: `{cmd: \"ls\", args: \"-1\"}` (args is a string, not an array). " +
+      "Valid keys: cmd, args, cwd, timeoutMs, keep, wait, kill, jobs. Any other key is rejected. " +
+      "Argv globs `*`/`?` in `args` are expanded. Shell metacharacters (`|`, `&&`, `;`, `>`, `<`, `$`, backticks) are interpreted via the OS subshell (`sh -c` on macOS/Linux, `cmd.exe /c` on Windows). " +
+      "Do not use for deleting user files \u2014 use `os.fs.trash` unless the user explicitly requests permanent shell deletion. " +
+      "Runs through a pre-exec guard: safe commands run directly, risky commands require approval, catastrophic commands are blocked without execution. " +
       describeShellTimeoutDefault(defaultTimeoutMs),
     readonly: false,
     async run(rawArgs, ctx) {
