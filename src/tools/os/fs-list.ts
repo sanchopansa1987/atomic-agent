@@ -33,7 +33,11 @@ export const osFsListTool: ToolDefinition = {
     "Args: path (required), pattern (glob like *.pdf or *foo*), " +
     "kind ('file'|'dir'), extensions (string[], e.g. ['pdf','docx']), " +
     "sort ('name'|'size'|'mtime', default 'name'), maxEntries (default 200). " +
-    "Prefer this over `os.shell.run ls` when looking for specific files.",
+    "Output is a table: each row is `kind  size  name` (padded columns), " +
+    "preceded by a header and a `[showing N/M]` line. " +
+    "For filenames only, pass `kind: 'file'` and read the third column of each row. " +
+    "Prefer this over `os.shell.run ls` when looking for files \u2014 it's already " +
+    "deterministic, sorted, and doesn't need shell quoting.",
   readonly: true,
   async run(rawArgs, ctx) {
     const args = parseArgs(rawArgs);
@@ -72,7 +76,7 @@ export const osFsListTool: ToolDefinition = {
           })),
         },
       },
-      { maxSummaryLength: 4000, maxTailLines: 500 },
+      { maxSummaryLength: 20_000, maxTailLines: 500 },
     );
   },
 };
