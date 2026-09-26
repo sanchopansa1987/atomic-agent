@@ -7,7 +7,7 @@ interface ReasoningTabProps {
   maxVisible: number;
 }
 
-const LINE_CLIP = 120;
+const LINE_CLIP = 10_000;
 
 /**
  * Collect reasoning text preserved on finalized assistant messages. The live
