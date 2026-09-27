@@ -1860,3 +1860,51 @@ describe("executeBatch under a step tool set", () => {
     expect(tracker.check("os.fs.read", { path: "a" }).count).toBe(0);
   });
 });
+
+it("blocks dispatch when successful shell outcomes trip the breaker", async () => {
+  const result = compressToolResult({
+    tool: "os.shell.run",
+    status: "ok",
+    output: "same observed result",
+    details: { exitCode: 0 },
+  });
+  const fn = vi.fn(async () => result);
+  const registry = buildRegistry({ "os.shell.run": fn }, false);
+  const tracker = new ToolLoopTracker();
+  const context = {
+    ...ctx(new AbortController().signal),
+    tracker,
+  };
+
+  for (let i = 0; i < 6; i++) {
+    const out = await executeBatch(
+      toBatchInputs([{
+        tool: "os.shell.run",
+        args: { cmd: `printf probe-${i}` },
+      }]),
+      registry,
+      context,
+    );
+    expect(out.results[0]!.compressed?.status).toBe("ok");
+  }
+  expect(fn).toHaveBeenCalledTimes(6);
+
+  const out = await executeBatch(
+    toBatchInputs([{
+      tool: "os.shell.run",
+      args: { cmd: "printf next-probe" },
+    }]),
+    registry,
+    context,
+  );
+
+  expect(fn).toHaveBeenCalledTimes(6);
+  expect(out.loopSignals).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: "breaker",
+      detector: "outcome_repeat",
+    }),
+  ]));
+  expect(out.results[0]!.compressed?.details.deniedReason)
+    .toBe(LOOP_VETO_DENIED_REASON);
+});
