@@ -251,6 +251,81 @@ describe("AgentLoop fusion seams", () => {
     expect(lessonBumps).toBe(0);
   });
 
+  it("toolFilter blocks an excluded tool at dispatch", async () => {
+    const registry = buildDefaultToolRegistry();
+    registry.unregister("os.fs.read");
+    let reads = 0;
+    registry.register({
+      name: "os.fs.read",
+      description: "Fake reader",
+      readonly: true,
+      async run() {
+        reads++;
+        return {
+          tool: "os.fs.read", status: "ok", summary: "read",
+          details: {}, truncated: false,
+        };
+      },
+    });
+    let completions = 0;
+    const loop = new AgentLoop({
+      registry,
+      slotManager: new SlotManager(2),
+      grammar: await buildGrammar(PLAIN_INSTRUCT_PROFILE),
+      toolTransport: "native_tools",
+      toolCallAdapter: openAiToolCallAdapter,
+      supportsSlotAffinity: false,
+      llmComplete: async () => makeCompletion(
+        completions++ === 0
+          ? JSON.stringify([{ tool: "os.fs.read", args: { path: "blocked.txt" } }])
+          : "done",
+      ),
+      toolDescriptors: TOOLS,
+      capabilities: CAPS,
+      skillCatalog: SKILLS,
+    });
+    const result = await loop.runTurn(
+      createEmptySessionState({ id: "s-filter-dispatch", workingDir }),
+      turnOptions({ maxSteps: 3, toolFilter: (name) => name !== "os.fs.read" }),
+    );
+    expect(result.reason).toBe("reply");
+    expect(reads).toBe(0);
+  });
+
+  it("promptToolFilter hides full descriptions without restricting tools", async () => {
+    const seen: LlmStreamParams[] = [];
+    const loop = new AgentLoop({
+      registry: buildDefaultToolRegistry(),
+      slotManager: new SlotManager(2),
+      grammar: await buildGrammar(PLAIN_INSTRUCT_PROFILE),
+      toolTransport: "native_tools",
+      toolCallAdapter: openAiToolCallAdapter,
+      supportsSlotAffinity: false,
+      llmComplete: async (params) => {
+        seen.push(params);
+        return makeCompletion("done");
+      },
+      toolDescriptors: TOOLS,
+      capabilities: CAPS,
+      skillCatalog: SKILLS,
+    });
+    await loop.runTurn(
+      createEmptySessionState({ id: "s-prompt-filter", workingDir }),
+      turnOptions({
+        toolRole: "builder",
+        promptToolFilter: (name: string) => name !== "os.fs.read",
+      }),
+    );
+    const request = seen[0]!;
+    const names = (request.tools ?? []).map(
+      (t) => (t as { function?: { name?: string } }).function?.name,
+    );
+    expect(names).toContain("os__fs__read");
+    expect(request.prompt).not.toContain("Read a file.");
+    expect(request.prompt).toContain("os.fs.read");
+    expect(grammarToolNames(request.grammar)).toContain("os.fs.read");
+  });
+
   it("toolFilter removes the descriptor from the step, and from the native tools payload", async () => {
     const seen: LlmStreamParams[] = [];
     const loop = new AgentLoop({

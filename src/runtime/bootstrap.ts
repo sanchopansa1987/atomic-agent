@@ -540,6 +540,7 @@ export interface AgentRuntime {
        * `fusion.delegate` narrows a worker's catalog with it.
        */
       toolFilter?: (name: string) => boolean;
+      promptToolFilter?: (name: string) => boolean;
       /** The turn's tool role (see `RunTurnOptions.toolRole`); a worker is a `builder`. */
       toolRole?: ToolRole;
       /** See `RunTurnOptions.reasoningEffort` — a fusion worker's setting. */
@@ -570,6 +571,7 @@ export interface AgentRuntime {
       providerId?: string;
       taskMaxDurationMs?: number;
       toolFilter?: (name: string) => boolean;
+      promptToolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
@@ -2825,6 +2827,7 @@ export async function createAgentRuntime(
     providerId?: string;
     taskMaxDurationMs?: number;
     toolFilter?: (name: string) => boolean;
+    promptToolFilter?: (name: string) => boolean;
     toolRole?: ToolRole;
     reasoningEffort?: ReasoningEffort;
     maxOutputTokens?: number;
@@ -2851,6 +2854,9 @@ export async function createAgentRuntime(
     ...(runOptions.toolFilter === undefined
       ? {}
       : { toolFilter: runOptions.toolFilter }),
+    ...(runOptions.promptToolFilter === undefined
+      ? {}
+      : { promptToolFilter: runOptions.promptToolFilter }),
     ...(runOptions.toolRole === undefined
       ? {}
       : { toolRole: runOptions.toolRole }),
@@ -2881,6 +2887,7 @@ export async function createAgentRuntime(
       providerId?: string;
       taskMaxDurationMs?: number;
       toolFilter?: (name: string) => boolean;
+      promptToolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
@@ -3028,6 +3035,7 @@ export async function createAgentRuntime(
       providerId?: string;
       taskMaxDurationMs?: number;
       toolFilter?: (name: string) => boolean;
+      promptToolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;

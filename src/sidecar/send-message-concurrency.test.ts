@@ -85,8 +85,11 @@ describe("sidecar send_message concurrency", () => {
     const llamaComplete = async (params: {
       sessionId: string;
     }): Promise<CompletionResult> => {
-      // Reflection completes immediately; only block on user turns.
-      if (params.sessionId.startsWith("reflection:")) {
+      // Internal memory calls complete immediately; only count user turns.
+      if (
+        params.sessionId.startsWith("reflection:") ||
+        params.sessionId.startsWith("rewriter:")
+      ) {
         return reply("ignored");
       }
       userCallCount += 1;

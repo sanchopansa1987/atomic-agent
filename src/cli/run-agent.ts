@@ -293,7 +293,7 @@ async function runChatLoop(opts: ChatLoopOptions): Promise<SessionState> {
         // Interactive CLI sessions get a minimal surface; everything else
         // stays reachable via tool.view. Builder is a worker role — its
         // FS/verify/mcp breadth is wrong for a REPL.
-        toolFilter: (name) => [
+        promptToolFilter: (name) => [
           "os.fs.read",
           "os.fs.list",
           "os.fs.glob",

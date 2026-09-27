@@ -434,13 +434,12 @@ export interface StepContext {
    */
   toolSet?: StepToolSet;
   /**
-   * The turn's `RunTurnOptions.toolFilter`, when one is set. The loop has
-   * already applied it to `toolDescriptors`; the step applies it once
-   * more to the per-request grammar, so a hidden tool is not merely
-   * absent from the catalog but impossible for a local model to emit —
-   * `finish` included, which the static grammar lists unconditionally.
+   * Hard per-turn exclusions, applied to descriptors, grammar,
+   * discovery and dispatch.
    */
   toolFilter?: (name: string) => boolean;
+  /** Prompt descriptions only; does not restrict discovery or execution. */
+  promptToolFilter?: (name: string) => boolean;
   /**
    * The turn's tool role (`tool-roles.ts`). Decides which of
    * `toolDescriptors` the prompt describes in full (the rest become one
@@ -612,7 +611,11 @@ async function executeStepInner(
   // the last step re-read the whole prompt on a cold slot. The final
   // step is enforced by the batch gate and, locally, by the grammar
   // (`resolveStepGrammar`), never by the catalog.
-  const stepToolDescriptors = ctx.toolDescriptors;
+  // Hard exclusions apply before role selection and discovery.
+  // Prompt-only preferences leave the descriptor catalog intact.
+  const stepToolDescriptors = ctx.toolFilter
+    ? ctx.toolDescriptors.filter((d) => ctx.toolFilter!(d.name))
+    : ctx.toolDescriptors;
   // What this step describes in full, puts on the native wire and admits
   // in the grammar: the role's tools plus the ones the session has loaded
   // through `tool.view`. Under `full` this IS `stepToolDescriptors`, same
@@ -641,7 +644,9 @@ async function executeStepInner(
     // here left the "also available via tool.view" line empty, so the
     // prompt never advertised the ~115 deferred tools.
     toolDescriptors: stepToolDescriptors,
-    ...(ctx.toolFilter !== undefined ? { toolFilter: ctx.toolFilter } : {}),
+    ...(ctx.promptToolFilter !== undefined
+      ? { toolFilter: ctx.promptToolFilter }
+      : {}),
     capabilities: ctx.capabilities,
     skillCatalog: ctx.skillCatalog,
     currentDate: formatCurrentDate(new Date()),
@@ -1658,6 +1663,7 @@ async function executeStepInner(
       : {}),
     ...(ctx.toolRole !== undefined ? { toolRole: ctx.toolRole } : {}),
     toolDescriptors: stepToolDescriptors,
+    ...(ctx.toolFilter !== undefined ? { toolFilter: ctx.toolFilter } : {}),
     ...(batch.maxWaveSize !== undefined
       ? { maxWaveSize: batch.maxWaveSize }
       : {}),

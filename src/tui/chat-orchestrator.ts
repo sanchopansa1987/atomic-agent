@@ -1188,7 +1188,7 @@ export class ChatOrchestrator {
         // the 6k context cap before the first turn. Everything not
         // listed here stays reachable via tool.view on demand.
         toolRole: "builder",
-        toolFilter: (name) => [
+        promptToolFilter: (name) => [
           "os.fs.read",
           "os.fs.list",
           "os.fs.glob",

@@ -26,6 +26,9 @@ export function buildToolViewTool(): ToolDefinition {
       if (typeof name !== "string" || name.length === 0) {
         throw new Error("tool.view: `name` must be a non-empty string");
       }
+      if (ctx.toolFilter && !ctx.toolFilter(name)) {
+        throw new Error(`tool.view: tool excluded from this turn: ${name}`);
+      }
       if (process.env.ATOMIC_DEBUG_TOOLVIEW) {
         process.stderr.write(
           `[tool.view DEBUG] name=${name} ` +
@@ -46,7 +49,7 @@ export function buildToolViewTool(): ToolDefinition {
       if (!d) {
         throw new Error(`tool.view: unknown tool: ${name}`);
       }
-      const role = ctx.toolRole ?? "builder";
+      const role = ctx.toolRole ?? "full";
       const outsideRole = !roleAdmits(role, d.name);
       // Runtime (MCP) tools always come back from the descriptor
       // builder at `tier: "frequent"`, so the rare/extras check would

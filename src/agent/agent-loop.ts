@@ -626,16 +626,13 @@ export interface RunTurnOptions {
    */
   ephemeral?: boolean;
   /**
-   * Hide tools from this turn. Applied to the descriptors handed to every
-   * step, composed with the finalization-step filter, so under native
-   * tools the hidden tool also leaves the wire payload — the step builds
-   * `tools` from the same descriptors. The two terminal tools are the
-   * exception: the OpenAI adapter appends `reply` / `finish` to the wire
-   * unconditionally, so filtering them only hides them from the prompt
-   * catalog. Used to keep a worker from delegating further, scheduling,
-   * or writing memory.
+   * Hard exclusions from this turn's catalog, discovery and dispatch.
+   * The native adapter may still advertise terminal tools, but excluded
+   * terminals are refused at dispatch.
    */
   toolFilter?: (name: string) => boolean;
+  /** Prompt descriptions only; does not restrict discovery or execution. */
+  promptToolFilter?: (name: string) => boolean;
   /**
    * The turn's tool role (`src/tools/tool-roles.ts`): which tools the
    * prompt describes in full, the native wire carries and the local
@@ -1034,14 +1031,9 @@ export class AgentLoop {
       options.providerId !== undefined && this.deps.resolveLlmSlice
         ? this.deps.resolveLlmSlice(options.providerId)
         : null;
-    // IMPORTANT: StepContext.toolDescriptors must be the FULL catalog.
-    // `toolFilter` is a prompt-surface concern only (it decides which
-    // tools render in `### tools` vs the "also available via tool.view"
-    // line).  `tool.view` resolves names against this list, so narrowing
-    // it here made every filtered-out tool unreachable — MCP tools and
-    // out-of-role built-ins included.  The filter rides on
-    // `options.toolFilter` into the prompt build; the descriptor list
-    // stays complete.
+    // Keep the source catalog complete. The step applies hard toolFilter
+    // exclusions before requests and discovery; promptToolFilter only
+    // changes which descriptions appear in full.
     const visibleToolDescriptors = (): readonly ToolDescriptor[] =>
       this.deps.toolDescriptors;
 
@@ -1490,6 +1482,9 @@ export class AgentLoop {
               ? { toolSet: reviewStallToolSet() }
               : {}),
             ...(options.toolFilter ? { toolFilter: options.toolFilter } : {}),
+            ...(options.promptToolFilter
+              ? { promptToolFilter: options.promptToolFilter }
+              : {}),
             toolRole,
             ...(truncationRetry?.stepIndex === i &&
             truncationRetry.maxTokens !== undefined

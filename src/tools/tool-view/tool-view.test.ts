@@ -83,3 +83,23 @@ describe("buildToolViewTool in registry", () => {
     expect(r.has("tool.view")).toBe(true);
   });
 });
+
+it("honours hard exclusions without blocking allowed discovery", async () => {
+  const tool = buildToolViewTool();
+  const ctx = {
+    workingDir: "/w",
+    sessionId: "s-filter",
+    stepIndex: 0,
+    signal: new AbortController().signal,
+    toolRole: "builder" as const,
+    toolFilter: (name: string) => name !== "memory.notes.store",
+  };
+
+  await expect(
+    tool.run({ name: "memory.notes.store" }, ctx),
+  ).rejects.toThrow(/excluded/);
+
+  const allowed = await tool.run({ name: "os.git.show" }, ctx);
+  expect(allowed.status).toBe("ok");
+  expect(allowed.details.toolLoaded).toMatchObject({ name: "os.git.show" });
+});

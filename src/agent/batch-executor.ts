@@ -108,6 +108,8 @@ export interface BatchCallInput {
 }
 
 export interface BatchExecutionContext {
+  /** Hard per-turn exclusions, including tool discovery. */
+  toolFilter?: (name: string) => boolean;
   workingDir: string;
   sessionId: string;
   stepIndex: number;
@@ -448,6 +450,7 @@ export async function executeBatch(
         ...(ctx.toolRole !== undefined ? { toolRole: ctx.toolRole } : {}),
         ...(ctx.toolDescriptors !== undefined ? { toolDescriptors: ctx.toolDescriptors } : {}),
         ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+        ...(ctx.toolFilter !== undefined ? { toolFilter: ctx.toolFilter } : {}),
       });
     } catch (err) {
       if (ctx.signal.aborted) {
@@ -753,6 +756,18 @@ function runFinalStepGate(
   input: BatchCallInput,
   ctx: BatchExecutionContext,
 ): { proceed: boolean; vetoResult?: CompressedToolResult } {
+  if (ctx.toolFilter && !ctx.toolFilter(input.call.tool)) {
+    return {
+      proceed: false,
+      vetoResult: {
+        tool: input.call.tool,
+        status: "error",
+        summary: `Tool excluded from this turn: ${input.call.tool}`,
+        details: { tool_filter: true, tool: input.call.tool },
+        truncated: false,
+      },
+    };
+  }
   if (input.resourceClass === "terminal") return { proceed: true };
   if (ctx.terminalOnly) {
     return {

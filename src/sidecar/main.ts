@@ -327,7 +327,7 @@ export async function bootstrapSidecar(): Promise<{
           toolRole: "builder",
           // CLI sessions don't need 57 MCP tools preloaded; they stay
           // reachable via tool.view.
-          toolFilter: (name) => !name.startsWith("mcp."),
+          promptToolFilter: (name) => !name.startsWith("mcp."),
           signal: active.controller.signal,
         });
       },

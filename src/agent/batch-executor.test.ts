@@ -1908,3 +1908,32 @@ it("blocks dispatch when successful shell outcomes trip the breaker", async () =
   expect(out.results[0]!.compressed?.details.deniedReason)
     .toBe(LOOP_VETO_DENIED_REASON);
 });
+
+it.each([false, true])(
+  "enforces hard terminal exclusions with terminalOnly=%s",
+  async (terminalOnly) => {
+    const finish = vi.fn(async () => okResult("finish", "done"));
+    const reply = vi.fn(async () => okResult("reply", "done"));
+    const registry = buildRegistry({ finish, reply });
+    const context = {
+      ...ctx(new AbortController().signal),
+      terminalOnly,
+      toolFilter: (name: string) => name !== "finish",
+    };
+
+    const blocked = await executeBatch(
+      toBatchInputs([{ tool: "finish", args: { summary: "done" } }]),
+      registry,
+      context,
+    );
+    expect(finish).not.toHaveBeenCalled();
+    expect(blocked.results[0]!.compressed?.status).toBe("error");
+
+    await executeBatch(
+      toBatchInputs([{ tool: "reply", args: { text: "done" } }]),
+      registry,
+      context,
+    );
+    expect(reply).toHaveBeenCalledTimes(1);
+  },
+);

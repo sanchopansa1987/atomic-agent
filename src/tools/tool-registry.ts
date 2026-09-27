@@ -3,6 +3,8 @@ import { coerceToolArgs } from "./coerce-tool-args.js";
 import type { ToolRole } from "./tool-roles.js";
 
 export interface ToolContext {
+  /** Hard per-turn exclusions, including tool discovery. */
+  toolFilter?: (name: string) => boolean;
   /** Working directory for OS tools and relative path resolution. */
   workingDir: string;
   sessionId: string;
