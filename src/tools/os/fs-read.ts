@@ -165,6 +165,14 @@ async function readByLines(
   // the readable line count and the file's true size, so the next step is
   // unambiguous: increase maxBytes or drop the offset.
   if (total > 0 && startIndex >= total) {
+    if (size <= args.maxBytes) {
+      throw new Error(
+        `os.fs.read: offset ${args.offset} is past the end of ${absolute}. ` +
+          `The whole file was read (${size} bytes, ${total} lines). ` +
+          `Use an offset within lines 1-${total}, ` +
+          `or omit offset to read from the top of the file.`,
+      );
+    }
     const maxBytesCap = args.maxBytes;
     throw new Error(
       `os.fs.read: offset ${args.offset} is past the readable-prefix of ${absolute}. ` +

@@ -608,57 +608,34 @@ describe("read-coverage detection end to end", () => {
     expect(signals[0]?.detector).toBe("read_repeat");
   });
 
-  it("blames the byte cap when the requested lines are behind it", async () => {
-    // 200 lines of ~9 bytes; a 300-byte cap makes everything past line ~30
-    // unreachable. The model asking for line 150 twice is not re-reading a
-    // covered range — it is asking for something no `offset` can deliver —
-    // so the signal has to carry that fact through to the notice.
-    const cap = { path: "src.ts", maxBytes: 300 };
-    expect(
-      await runRead(dir, tracker, { ...cap, offset: 1, limit: 5 }),
-    ).toEqual([]);
-    expect(
-      await runRead(dir, tracker, { ...cap, offset: 150, limit: 10 }),
-    ).toHaveLength(1);
-    const signals = await runRead(dir, tracker, {
-      ...cap,
-      offset: 170,
-      limit: 10,
-    });
-    expect(signals).toHaveLength(1);
-    const read = signals[0]!.read!;
-    expect(read.startLine).toBe(0);
-    expect(read.endLine).toBe(0);
-    expect(read.truncated).toBe(true);
-    expect(read.totalLines).toBeLessThan(200);
-    const notice = formatReadRepeatNotice({
-      count: signals[0]!.count,
-      ...read,
-    });
-    expect(notice).toContain("Raise `maxBytes`");
-    expect(notice).not.toContain("Re-reading a covered range");
-  });
-
-  it("blames the offset, not the cap, past the end of a fully readable file", async () => {
-    // Same empty return, opposite cause and opposite fix: the whole file
-    // fits in the byte budget, so the model simply asked past its end.
-    expect(await runRead(dir, tracker, { path: "src.ts" })).toEqual([]);
-    expect(
-      await runRead(dir, tracker, { path: "src.ts", offset: 500, limit: 10 }),
-    ).toHaveLength(1);
-    const signals = await runRead(dir, tracker, {
-      path: "src.ts",
-      offset: 900,
-      limit: 10,
-    });
-    const read = signals[0]!.read!;
-    expect(read.truncated).toBe(false);
-    const notice = formatReadRepeatNotice({
-      count: signals[0]!.count,
-      ...read,
-    });
-    expect(notice).toContain("Stay inside lines 1-200");
-    expect(notice).not.toContain("Raise `maxBytes`");
+  it.each([
+    {
+      label: "byte cap",
+      args: { path: "src.ts", maxBytes: 300, offset: 150, limit: 10 },
+      message: /larger maxBytes/,
+    },
+    {
+      label: "end of file",
+      args: { path: "src.ts", offset: 500, limit: 10 },
+      message: /past the end/,
+    },
+  ])("reports an error for an offset beyond the $label", async ({
+    label, args, message,
+  }) => {
+    const outcome = await executeBatch(
+      toBatchInputs([{ tool: "os.fs.read", args }]),
+      readRegistry(),
+      batchCtx(dir, tracker),
+    );
+    const result = outcome.results[0]!.compressed!;
+    expect(result.status).toBe("error");
+    expect(result.summary).toMatch(message);
+    if (label === "end of file") {
+      expect(result.summary).not.toContain("larger maxBytes");
+    }
+    expect(outcome.loopSignals.filter(
+      (signal) => signal.detector === "read_repeat",
+    )).toEqual([]);
   });
 
   it("keys the warn bucket by file version so a post-edit nudge survives", async () => {

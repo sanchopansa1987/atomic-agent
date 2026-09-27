@@ -153,16 +153,11 @@ describe("os.fs.read coverage detail", () => {
     expect(coverage.totalLines).toBeLessThan(4);
   });
 
-  it("reports an empty span for a read past the end of the file", async () => {
+  it("rejects an offset past the end of a fully readable file", async () => {
     await writeFile(join(dir, "a.txt"), "1\n2\n", "utf8");
-    const coverage = await readCoverageOf(dir, {
-      path: "a.txt",
-      offset: 99,
-      limit: 5,
-    });
-    expect(coverage.startLine).toBe(0);
-    expect(coverage.endLine).toBe(0);
-    expect(coverage.totalLines).toBe(2);
+    await expect(osFsReadTool.run(
+      { path: "a.txt", offset: 99, limit: 5 }, makeCtx(dir),
+    )).rejects.toThrow(/past the end/);
   });
 
   it("reports the rendering mode the read actually used", async () => {
