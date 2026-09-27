@@ -330,7 +330,8 @@ export interface TraceLoopDetected extends TraceEventBase {
     | "wandering"
     | "test_repeat"
     | "read_repeat"
-    | "outcome_repeat";
+    | "outcome_repeat"
+    | "no_write_progress";
   /**
    * `read_repeat` only (issue #114): the canonical file the reads landed
    * on, the line range the triggering read returned, and the content

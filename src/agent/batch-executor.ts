@@ -532,6 +532,17 @@ export async function executeBatch(
       // whatever the arguments were. Post-hoc and warn-only like the
       // read-coverage detector below — the call has already run, and a
       // legitimate poll or re-test looks exactly like this.
+      if (ctx.tracker.shouldEmitNoWriteProgressWarn()) {
+        loopSignals.push({
+          kind: "warn",
+          tool: input.call.tool,
+          count: ctx.tracker.noWriteProgressCount,
+          detector: "no_write_progress",
+          // Fires at most once per streak, so a per-streak key is enough;
+          // `warningKey` is required by the union shape, not per-step.
+          warningKey: `no_write_progress:${input.call.tool}`,
+        });
+      }
       if (outcome.repeat) {
         loopSignals.push({
           kind: "warn",
@@ -818,14 +829,36 @@ function runSyncLoopGate(
   // turn gracefully (the redirect notice did not land). It rides the same
   // breaker path as the consecutive-veto streak.
   const wanderingEscalated = ctx.tracker.isWanderingEscalated(tool, args);
+  // Outcome-repeat breaker: N repeats of the same outcome with no write
+  // landing in between. Ends the turn like the veto breaker, but for
+  // the varying-args-same-answer pattern the args-keyed detectors miss.
+  const outcomeRepeatTripped = ctx.tracker.isOutcomeRepeatBreakerTripped();
+  // No-write-progress breaker: N tool calls without a successful
+  // write. Ends the turn like the other breakers, but is the only
+  // one that fires on absence of progress rather than repeats.
+  const noWriteProgressTripped = ctx.tracker.isNoWriteProgressBreakerTripped();
   const verdict = ctx.tracker.check(tool, args);
   ctx.tracker.recordCall(tool, args);
 
-  if (verdict.level === "critical" || breakerTripped || wanderingEscalated) {
-    const forceBreaker = breakerTripped || wanderingEscalated;
-    const count = breakerTripped
-      ? Math.max(verdict.count, ctx.tracker.breakerThreshold)
-      : verdict.count;
+  if (
+    verdict.level === "critical" ||
+    breakerTripped ||
+    wanderingEscalated ||
+    outcomeRepeatTripped ||
+    noWriteProgressTripped
+  ) {
+    const forceBreaker =
+      breakerTripped ||
+      wanderingEscalated ||
+      outcomeRepeatTripped ||
+      noWriteProgressTripped;
+    const count = noWriteProgressTripped
+      ? ctx.tracker.noWriteProgressCount
+      : outcomeRepeatTripped
+        ? ctx.tracker.outcomeRepeatCount
+        : breakerTripped
+          ? Math.max(verdict.count, ctx.tracker.breakerThreshold)
+          : verdict.count;
     // Name the invariant that held across the blocked attempts (host for
     // web/HTTP, command name for shell) so the message says WHAT stayed
     // the same instead of only that something did.
@@ -839,10 +872,13 @@ function runSyncLoopGate(
     // stops wandering and settles on repeating one argument -- and borrowing
     // it there would announce "N different attempts" about a verbatim
     // repeat, quoting a count the verdict never established.
-    const detector =
-      wanderingEscalated && verdict.detector === "wandering"
-        ? "wandering"
-        : verdict.detector;
+    const detector = noWriteProgressTripped
+      ? "no_write_progress"
+      : outcomeRepeatTripped
+        ? "outcome_repeat"
+        : wanderingEscalated && verdict.detector === "wandering"
+          ? "wandering"
+          : verdict.detector;
     const vetoResult = compressToolResult({
       tool,
       status: "error",

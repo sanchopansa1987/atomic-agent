@@ -86,10 +86,12 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
       "Do: `{cmd: \"ls -1 /path | head\"}` (full command line, omit `args`). " +
       "Don't: `{cmd: \"ls -p\", args: [\"/path\"]}` (cmd has flags but args is non-empty). " +
       "Don't: `{cmd: \"ls\", args: \"-1\"}` (args is a string, not an array). " +
-      "Valid keys: cmd, args, cwd, timeoutMs, keep, wait, kill, jobs. Any other key is rejected. " +
+      "Valid keys: cmd, args, cwd, timeoutMs, keep, detach, wait, kill, jobs. Any other key is rejected. " +
       "Argv globs `*`/`?` in `args` are expanded. Shell metacharacters (`|`, `&&`, `;`, `>`, `<`, `$`, backticks) are interpreted via the OS subshell (`sh -c` on macOS/Linux, `cmd.exe /c` on Windows). " +
       "Do not use for deleting user files \u2014 use `os.fs.trash` unless the user explicitly requests permanent shell deletion. " +
       "Runs through a pre-exec guard: safe commands run directly, risky commands require approval, catastrophic commands are blocked without execution. " +
+"To start a daemon or any long-running process, pass `detach: true`. The call returns immediately with a job id. " +
+"After detaching, follow up with `{wait: id}`, `{kill: id}`, or `{jobs: true}`. " +
       describeShellTimeoutDefault(defaultTimeoutMs),
     readonly: false,
     async run(rawArgs, ctx) {
@@ -274,6 +276,32 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
         cwd,
         ...(facts.gog ? { maxOutputBytes: GOG_MAX_OUTPUT_BYTES } : {}),
       });
+      // `detach: true` or `keep: true` on a cmd call registers the job
+      // and returns its id at once, without waiting for the timeout.
+      // The model reads `keep` as "return a job id instead of waiting"
+      // (from the flag's name plus the descriptor), so both spellings
+      // route here. The job is always kept — a detached daemon that
+      // dies at the turn's end defeats the point. Note: a spawn failure
+      // (ENOENT) usually surfaces on the first `waitFor`; this branch
+      // skips it, so a follow-up `{wait: id}` reports it.
+      if (rawArgs.detach === true || rawArgs.keep === true) {
+        const detachNotice = nodeCheckMultiFileNotice(commandLine, cwd);
+        const detachNotices = detachNotice === null ? [] : [detachNotice];
+        const { record, evicted } = jobs.register(
+          ctx.sessionId,
+          job,
+          facts,
+          true,
+        );
+        return renderShellDetached(record, {
+          waitedMs: 0,
+          again: false,
+          defaultTimeoutMs,
+          evicted,
+          maxJobs: jobs.maxJobs,
+          notices: detachNotices,
+        });
+      }
       // A spawn failure (ENOENT) rejects here, as the runner's always did.
       const outcome = await job.waitFor(timeout.timeoutMs, ctx.signal);
       // `node --check a b c` exits 0 having read only `a`. Said first,

@@ -92,6 +92,7 @@ import {
   formatTestRepeatNotice,
   formatWanderingRedirect,
   formatForcedLoopReply,
+  formatNoWriteProgressNotice,
 } from "./loop-detector.js";
 import type { BatchLoopSignal } from "./batch-executor.js";
 import { composeSteerNotice } from "./steer-notice.js";
@@ -850,7 +851,8 @@ export type AgentLoopEvent =
         | "wandering"
         | "test_repeat"
         | "read_repeat"
-        | "outcome_repeat";
+        | "outcome_repeat"
+        | "no_write_progress";
       /**
        * `read_repeat` only: the resolved file, the range that read
        * returned, and the fingerprint on either side of it (equal ⇒ the
@@ -1764,7 +1766,11 @@ export class AgentLoop {
         // turn ends with a best-effort answer, the session stays usable).
         const breaker = loopSignals.find((s) => s.kind === "breaker");
         if (breaker) {
-          const replyText = formatForcedLoopReply(breaker.tool, breaker.count);
+          const replyText = formatForcedLoopReply(
+            breaker.tool,
+            breaker.count,
+            breaker.detector,
+          );
           state = recordTurn(state, assistantReplyTurn(replyText));
           this.deps.onEvent?.({
             type: "llm_event",
@@ -1843,7 +1849,9 @@ export class AgentLoop {
                       sig.count,
                       OUTCOME_REPEAT_WARNING_THRESHOLD,
                     )
-                  : loopTracker.shouldEmitWarning(sig.warningKey, sig.count);
+                  : sig.detector === "no_write_progress"
+                    ? true
+                    : loopTracker.shouldEmitWarning(sig.warningKey, sig.count);
           if (!emit) {
             continue;
           }
@@ -1856,7 +1864,9 @@ export class AgentLoop {
                   ? formatReadRepeatNotice({ count: sig.count, ...sig.read })
                   : sig.detector === "outcome_repeat"
                     ? formatOutcomeRepeatNotice(sig)
-                    : formatRepeatNotice(sig);
+                    : sig.detector === "no_write_progress"
+                      ? formatNoWriteProgressNotice({ count: sig.count })
+                      : formatRepeatNotice(sig);
           this.deps.onEvent?.({
             type: "loop_detected",
             tool: sig.tool,

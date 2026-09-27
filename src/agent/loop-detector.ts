@@ -66,6 +66,29 @@ export const READ_REPEAT_WARNING_THRESHOLD = 2;
  */
 export const OUTCOME_REPEAT_WARNING_THRESHOLD = 3;
 
+/**
+ * Outcome-repeat firings without a successful write at which the
+ * detector escalates from warn to breaker. The warn asks the model
+ * to change strategy; this many firings means the ask did not land,
+ * and the turn should end with a forced reply rather than running
+ * to `agent.task.maxSteps`.
+ */
+export const OUTCOME_REPEAT_BREAKER_THRESHOLD = 4;
+
+/**
+ * Consecutive non-write tool outcomes at which the no-write-progress
+ * detector emits a warn notice. A read is productive work, so the
+ * floor is deliberately high — an audit of 25 files is legitimate.
+ */
+export const NO_WRITE_PROGRESS_WARN_STEPS = 30;
+
+/**
+ * Consecutive non-write tool outcomes at which the detector trips
+ * the breaker and forces a graceful reply. Higher than the warn by
+ * design: the notice gets one chance to change strategy first.
+ */
+export const NO_WRITE_PROGRESS_BREAKER_STEPS = 60;
+
 /** How much of a result's summary the outcome fingerprint reads. */
 const OUTCOME_FINGERPRINT_CHARS = 200;
 
@@ -167,7 +190,8 @@ export interface LoopCheckVerdict {
     | "wandering"
     | "test_repeat"
     | "read_repeat"
-    | "outcome_repeat";
+    | "outcome_repeat"
+    | "no_write_progress";
   /** Stable key for warn de-duplication and breaker signalling. */
   warningKey: string;
   tool: string;
@@ -276,6 +300,26 @@ export class ToolLoopTracker {
    * the eviction order (see `MAX_TRACKED_OUTCOMES`).
    */
   private readonly outcomeCounts = new Map<string, number>();
+
+  /**
+   * Outcome-repeat firings since the last successful write. Unlike
+   * `outcomeCounts` (per-fingerprint), a single counter: every
+   * `repeat: true` return increments it; `isSuccessfulWrite` resets
+   * it. Crossing `OUTCOME_REPEAT_BREAKER_THRESHOLD` ends the turn.
+   */
+  private outcomeRepeatsSinceWrite = 0;
+
+  /**
+   * Consecutive tool outcomes that were not a successful write.
+   * Reset on any write; incremented on any other non-veto outcome.
+   * Crossing `NO_WRITE_PROGRESS_WARN_STEPS` fires a warn notice
+   * (once per streak); `NO_WRITE_PROGRESS_BREAKER_STEPS` forces
+   * a graceful reply.
+   */
+  private stepsSinceLastWrite = 0;
+
+  /** Whether the warn for the current no-write streak has fired. */
+  private noWriteWarnEmitted = false;
 
   constructor(options: ToolLoopTrackerOptions = {}) {
     this.warningThreshold = Math.max(2, options.warningThreshold ?? 3);
@@ -445,6 +489,9 @@ export class ToolLoopTracker {
   ): OutcomeRepeatCheck {
     if (isSuccessfulWrite(tool, result)) {
       this.outcomeCounts.clear();
+      this.outcomeRepeatsSinceWrite = 0;
+      this.stepsSinceLastWrite = 0;
+      this.noWriteWarnEmitted = false;
       return { repeat: false, count: 0, fingerprint: "" };
     }
     const fingerprint = fingerprintToolOutcome(tool, result);
@@ -456,11 +503,22 @@ export class ToolLoopTracker {
       const oldest = this.outcomeCounts.keys().next();
       if (!oldest.done) this.outcomeCounts.delete(oldest.value);
     }
-    return {
-      repeat: count >= OUTCOME_REPEAT_WARNING_THRESHOLD,
-      count,
-      fingerprint,
-    };
+    const repeat = count >= OUTCOME_REPEAT_WARNING_THRESHOLD;
+    // Warn-level repeat counts every tool; the breaker counter is
+    // narrower. A repeated *successful* observation is legitimate
+    // work — the same file read, a stub whose summary is its own
+    // name, a query returning the same page. Only a repeated
+    // *failure* means the model is stuck: the same error coming back
+    // no matter how the attempt was phrased.
+    if (repeat && result.status !== "ok")
+      this.outcomeRepeatsSinceWrite += 1;
+    // A *successful* read or inspection is progress, not its
+    // absence — only a non-write that came back with an error
+    // counts toward the no-write-progress streak. Without this
+    // gate, an audit that reads 40 files with no edits would warn
+    // 'no successful write in 30 calls' on entirely healthy work.
+    if (result.status !== "ok") this.stepsSinceLastWrite += 1;
+    return { repeat, count, fingerprint };
   }
 
   /**
@@ -620,6 +678,41 @@ export class ToolLoopTracker {
       this.consecutiveVetoSignature = signature;
       this.consecutiveVetoCount = 1;
     }
+  }
+
+  /**
+   * Whether the outcome-repeat detector has fired enough times without
+   * a successful write to force a graceful reply.
+   */
+  isOutcomeRepeatBreakerTripped(): boolean {
+    return this.outcomeRepeatsSinceWrite >= OUTCOME_REPEAT_BREAKER_THRESHOLD;
+  }
+
+  /** Outcome-repeat firings since the last successful write. */
+  get outcomeRepeatCount(): number {
+    return this.outcomeRepeatsSinceWrite;
+  }
+
+  /**
+   * No-write-progress: should this step emit a warn notice? True
+   * once per streak — the batch-executor pushes the warn on this
+   * signal and the notice text nudges a strategy change.
+   */
+  shouldEmitNoWriteProgressWarn(): boolean {
+    if (this.stepsSinceLastWrite < NO_WRITE_PROGRESS_WARN_STEPS) return false;
+    if (this.noWriteWarnEmitted) return false;
+    this.noWriteWarnEmitted = true;
+    return true;
+  }
+
+  /** No-write-progress: has the breaker threshold been reached? */
+  isNoWriteProgressBreakerTripped(): boolean {
+    return this.stepsSinceLastWrite >= NO_WRITE_PROGRESS_BREAKER_STEPS;
+  }
+
+  /** No-write-progress: current streak length. */
+  get noWriteProgressCount(): number {
+    return this.stepsSinceLastWrite;
   }
 
   /**
@@ -1182,7 +1275,34 @@ export function formatWanderingRedirect(tool: string, spread: number): string {
  * ignored repeated vetoes). Reused by the agent loop's forced graceful
  * termination path.
  */
-export function formatForcedLoopReply(tool: string, count: number): string {
+/**
+ * Warn notice for the no-write-progress detector: N tool calls in a
+ * row without a successful write. The wording says what to DO — make
+ * the change, report the blocker, or end with `reply` — rather than
+ * scolding, and it names reads so the model does not assume only
+ * mutations matter.
+ */
+export function formatNoWriteProgressNotice(verdict: {
+  count: number;
+}): string {
+  return [
+    `${verdict.count} tool calls in a row with no successful write. Reading, grepping and shell inspection do not change state — if you have enough evidence to act, do so now.`,
+    "Next step options: (1) make the actual change the diagnostics point at, (2) if a tool or install is blocking you, say so directly and try a different approach, or (3) end the turn with `reply` and a best-effort answer.",
+  ].join("\n");
+}
+
+export function formatForcedLoopReply(
+  tool: string,
+  count: number,
+  detector?: string,
+): string {
+  if (detector === "no_write_progress") {
+    return [
+      `(stopped: no successful write for ${count} tool calls).`,
+      "The turn was ended to avoid an unfocused runaway.",
+      "Here is my best answer with the information gathered so far — the task may be incomplete.",
+    ].join(" ");
+  }
   return [
     `(stopped: stuck in a no-progress loop on \`${tool}\` after ${count} blocked attempts).`,
     "I could not make further progress with the repeated tool call.",
@@ -1203,7 +1323,9 @@ function formatLoopGuidance(
   const wandering = context.detector === "wandering";
 
   let header: string;
-  if (mode === "veto" && wandering) {
+  if (context.detector === "no_write_progress") {
+    header = `BLOCKED: no successful write in ${count} tool calls — the turn is being ended to avoid an unfocused runaway.`;
+  } else if (mode === "veto" && wandering) {
     // Wandering: `count` is a spread of DISTINCT arguments, so calling
     // these "identical outcomes" would be flatly wrong.
     header = target

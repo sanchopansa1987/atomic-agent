@@ -43,9 +43,9 @@ export const DEFAULT_TOOL_DESCRIPTORS_A: readonly ToolDescriptor[] = [
   {
     name: "os.shell.run",
     summary:
-      "Run a shell command in the working directory (may require approval). Not for deleting user files — use os.fs.trash when the user wants paths removed. A command still running at the default timeout comes back as a job: wait for it, kill it, or list jobs.",
+      "Run a shell command in the working directory (may require approval). Not for deleting user files — use os.fs.trash when the user wants paths removed. Pass keep: true (or detach: true) on a cmd call to start a daemon and get a job id back at once, without waiting. A command still running at the default timeout also comes back as a job: wait for it, kill it, or list jobs.",
     argsSchema:
-      "{ cmd: string, args: string[], cwd?: string, timeoutMs?: number, keep?: boolean } | { wait: number /* job id */, timeoutMs?: number, keep?: boolean } | { kill: number } | { jobs: true }",
+      "{ cmd: string, args: string[], cwd?: string, timeoutMs?: number, keep?: boolean /* cmd: return a job id at once, before the default timeout — start a daemon; wait: retain the job after the turn ends */, detach?: boolean /* alias for keep on a cmd call */ } | { wait: number /* job id */, timeoutMs?: number, keep?: boolean } | { kill: number } | { jobs: true }",
   },
   {
     name: "os.fs.read",
