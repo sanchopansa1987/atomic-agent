@@ -494,7 +494,14 @@ export class ToolLoopTracker {
       this.noWriteWarnEmitted = false;
       return { repeat: false, count: 0, fingerprint: "" };
     }
-    const fingerprint = fingerprintToolOutcome(tool, result);
+    const completedShell =
+      tool === "os.shell.run" &&
+      result.status === "ok" &&
+      result.details.exitCode === 0 &&
+      result.details.detached !== true;
+    const fingerprint = completedShell
+      ? `completed-shell:${hashToolOutcome(tool, {}, result)}`
+      : fingerprintToolOutcome(tool, result);
     const count = (this.outcomeCounts.get(fingerprint) ?? 0) + 1;
     // Re-insert so the map's order stays least-recently-seen first.
     this.outcomeCounts.delete(fingerprint);
@@ -504,13 +511,10 @@ export class ToolLoopTracker {
       if (!oldest.done) this.outcomeCounts.delete(oldest.value);
     }
     const repeat = count >= OUTCOME_REPEAT_WARNING_THRESHOLD;
-    // Warn-level repeat counts every tool; the breaker counter is
-    // narrower. A repeated *successful* observation is legitimate
-    // work — the same file read, a stub whose summary is its own
-    // name, a query returning the same page. Only a repeated
-    // *failure* means the model is stuck: the same error coming back
-    // no matter how the attempt was phrased.
-    if (repeat && result.status !== "ok")
+    // Count repeated failures and identical completed shell results.
+    // Successful reads and detached jobs remain excluded. Shell results
+    // use the full semantic hash above to avoid summary-prefix collisions.
+    if (repeat && (result.status !== "ok" || completedShell))
       this.outcomeRepeatsSinceWrite += 1;
     // A *successful* read or inspection is progress, not its
     // absence — only a non-write that came back with an error
