@@ -59,13 +59,13 @@ describe("runCommand stdin", () => {
   });
 
   it("leaves inputTruncated false when the payload fits the pipe buffer", async () => {
-    // 64 KiB lands in the buffer before the child is gone, so nothing
-    // faults even though the child never reads it. The flag has to track
-    // the actual write, not the mere fact that the child ignored stdin.
+    // Keep this well below even small POSIX pipe capacities: the child
+    // exits without reading, and the flag tracks the completed write, not
+    // the mere fact that the child ignored stdin.
     const { command, args } = node(REJECTS_INPUT);
     const result = await runCommand(command, args, {
       cwd: process.cwd(),
-      input: "x".repeat(64 * KIB),
+      input: "x".repeat(KIB),
       timeoutMs: 10_000,
     });
 

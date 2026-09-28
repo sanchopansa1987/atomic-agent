@@ -192,7 +192,9 @@ describe("a timed-out memory sub-call", () => {
         llmComplete,
         linkStore: {} as LinkGeneratorRunnerDeps["linkStore"],
         reflectionSlotId: -1,
-        timeoutMs: 150,
+        // Give the first local fetch time to establish its loopback socket;
+        // the timeout must interrupt an open request, not race its startup.
+        timeoutMs: 1_000,
         emitTrace: (event) => outcomes.push(event.outcome),
       });
 

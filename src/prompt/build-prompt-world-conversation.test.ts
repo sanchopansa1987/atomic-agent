@@ -19,11 +19,11 @@ function readCall(args: Record<string, unknown>, at: number) {
   return assistantToolCallTurn({ tool: "os.fs.read", args, at });
 }
 
-function readResult(at: number) {
+function readResult(at: number, summary = bigFile) {
   return toolResultTurn({
     tool: "os.fs.read",
     status: "ok",
-    summary: bigFile,
+    summary,
     at,
   });
 }
@@ -74,13 +74,16 @@ describe("renderPackedConversation", () => {
 
 describe("packedConversationTurns", () => {
   it("caps each tool-result body exactly as the flat rendering does", () => {
+    // Keep the bodies distinct so this test exercises per-result packing,
+    // not the separate duplicate-body elision path.
+    const secondBigFile = bigFile.replace("line 1 ", "item 1 ");
     const packed = {
       visibleTurns: [
         userTurn("review the game", 1),
         readCall({ path: "js/main.js" }, 2),
         readCall({ path: "js/ship.js", offset: 101, limit: 300 }, 3),
         readResult(4),
-        readResult(5),
+        readResult(5, secondBigFile),
         assistantReplyTurn("done", 6),
       ],
       droppedSummary: "summary: older turns",

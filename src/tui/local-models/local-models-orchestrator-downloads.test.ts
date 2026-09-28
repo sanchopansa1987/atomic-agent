@@ -198,6 +198,9 @@ describe("LocalModelsOrchestrator — pulls through the download worker", () => 
   let startDaemon: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    // The suite stubs a backend binary; exercise orchestration on a supported target.
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
     stateDir = mkdtempSync(join(tmpdir(), "local-models-orch-dl-"));
     process.env.ATOMIC_AGENT_STATE_DIR = stateDir;
     resetConfigCache();
@@ -978,6 +981,9 @@ describe("LocalModelsOrchestrator — tell me when it lands", () => {
   }
 
   beforeEach(() => {
+    // The suite stubs a backend binary; exercise orchestration on a supported target.
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
     stateDir = mkdtempSync(join(tmpdir(), "atomic-notify-"));
     process.env.ATOMIC_AGENT_STATE_DIR = stateDir;
     delete process.env.TELEGRAM_BOT_TOKEN;
@@ -1012,6 +1018,7 @@ describe("LocalModelsOrchestrator — tell me when it lands", () => {
     delete process.env.TELEGRAM_BOT_TOKEN;
     delete process.env.ATOMIC_AGENT_STATE_DIR;
     resetConfigCache();
+    vi.restoreAllMocks();
     rmSync(stateDir, { recursive: true, force: true });
   });
 

@@ -49,6 +49,9 @@ describe("LocalModelsOrchestrator embedding pairing", () => {
   let stateDir: string;
 
   beforeEach(() => {
+    // The suite stubs a backend binary; exercise orchestration on a supported target.
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
     stateDir = mkdtempSync(join(tmpdir(), "local-models-pair-"));
     process.env.ATOMIC_AGENT_STATE_DIR = stateDir;
     resetConfigCache();
@@ -63,6 +66,7 @@ describe("LocalModelsOrchestrator embedding pairing", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     delete process.env.ATOMIC_AGENT_STATE_DIR;
     resetConfigCache();
     rmSync(stateDir, { recursive: true, force: true });

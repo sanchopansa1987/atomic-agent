@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const execSyncMock = vi.hoisted(() => vi.fn());
@@ -501,7 +501,14 @@ describe("stopDaemon / stopEmbeddingDaemon (cross-user ownership)", () => {
 });
 
 describe("startDaemon health-wait failure", () => {
+  beforeEach(() => {
+    // These tests stage a fake managed backend; run them as a supported target.
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
+  });
+
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     vi.unstubAllGlobals();
     spawnMock.mockReset();
@@ -641,7 +648,14 @@ describe("probeThroughput (F16)", () => {
 });
 
 describe("startDaemon throughput probe (F16)", () => {
+  beforeEach(() => {
+    // The staged binary is a fixture, not an Intel Mac backend install.
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
+  });
+
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     vi.unstubAllGlobals();
     spawnMock.mockReset();
@@ -732,7 +746,14 @@ describe("startDaemon throughput probe (F16)", () => {
 });
 
 describe("--swa-full (F12)", () => {
+  beforeEach(() => {
+    // These cases exercise launch policy against a fake managed backend.
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
+  });
+
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     vi.unstubAllGlobals();
     spawnMock.mockReset();

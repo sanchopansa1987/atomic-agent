@@ -14,6 +14,7 @@ vi.mock("../../local-llm/index.js", async () => {
     getEmbeddingDaemonStatus: vi.fn(),
     startEmbeddingDaemon: vi.fn(),
     stopEmbeddingDaemon: vi.fn(),
+    startChatAndEmbeddingDaemons: vi.fn(),
     maybeAutoUpdateBackend: vi.fn(),
   };
 });
@@ -43,6 +44,9 @@ describe("LocalModelsOrchestrator backend auto-update", () => {
   let stateDir: string;
 
   beforeEach(() => {
+    // The suite stubs a backend binary; exercise orchestration on a supported target.
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
     stateDir = mkdtempSync(join(tmpdir(), "local-models-au-"));
     process.env.ATOMIC_AGENT_STATE_DIR = stateDir;
     resetConfigCache();
@@ -50,10 +54,12 @@ describe("LocalModelsOrchestrator backend auto-update", () => {
     vi.mocked(localLlm.getEmbeddingDaemonStatus).mockReset();
     vi.mocked(localLlm.startEmbeddingDaemon).mockReset();
     vi.mocked(localLlm.stopEmbeddingDaemon).mockReset();
+    vi.mocked(localLlm.startChatAndEmbeddingDaemons).mockReset();
     vi.mocked(localLlm.maybeAutoUpdateBackend).mockReset();
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     delete process.env.ATOMIC_AGENT_STATE_DIR;
     resetConfigCache();
     rmSync(stateDir, { recursive: true, force: true });
@@ -217,6 +223,21 @@ describe("LocalModelsOrchestrator backend auto-update", () => {
       subscribe: () => () => {},
     });
     vi.spyOn(orchestrator, "refresh").mockResolvedValue();
+    vi.mocked(localLlm.startChatAndEmbeddingDaemons).mockResolvedValue({
+      chat: {
+        pid: 1234,
+        tokensPerSecond: null,
+        contextSize: 0,
+        swaFull: {
+          enabled: false,
+          reason: "test",
+          estimate: null,
+          slidingLayers: 0,
+        },
+        prefixReuse: null,
+      },
+      embedding: { skipped: true },
+    });
 
     // With the check skipped there is nothing to bail on, so the start
     // proceeds past the point where `backendUsable: false` would stop it.
