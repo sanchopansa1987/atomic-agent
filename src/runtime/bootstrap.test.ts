@@ -182,6 +182,33 @@ describe("createAgentRuntime", () => {
     }
   });
 
+  it("recalls content from the runtime's shared blob store", async () => {
+    const runtime = await createAgentRuntime({
+      workingDir,
+      approvalLevel: 5,
+      overrides: { browserBackend: backend, skipLlamaHealthCheck: true },
+    });
+    try {
+      const content = "saved output\n\nwith whitespace  \n";
+      const blob = await runtime.blobStore.put(content);
+      const result = await runtime.toolRegistry.invoke("tool.recall", { blob }, {
+        workingDir,
+        sessionId: "s-recall",
+        stepIndex: 0,
+        signal: new AbortController().signal,
+      });
+      expect(result).toEqual({
+        tool: "tool.recall",
+        status: "ok",
+        summary: content,
+        details: { blob, bytes: Buffer.byteLength(content, "utf8") },
+        truncated: false,
+      });
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it("wires skills.catalogTokenBudget into the runtime skill catalog, at boot and on refresh", async () => {
     // Regression guard for the call-site wiring itself: the original bug
     // was `buildSkillCatalog` being called WITHOUT options in bootstrap,

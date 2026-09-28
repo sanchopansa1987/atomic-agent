@@ -58,6 +58,11 @@ export const DEFAULT_TOOL_DESCRIPTORS_B: readonly ToolDescriptor[] = [
     argsSchema: '{ name: string } /* e.g. "os.git.show" */',
   },
   {
+    name: "tool.recall",
+    summary: "Recall stored blob content verbatim, up to 64,000 characters.",
+    argsSchema: "{ blob: string /* 64-char SHA-256 */ }",
+  },
+  {
     name: "skill.run_script",
     summary:
       "Run a script from a skill's requires_scripts (may require approval).",

@@ -72,6 +72,7 @@ import { registerGithubTools } from "../tools/github/index.js";
 import { resolveGithubToken } from "../github/index.js";
 import { registerSkillTools } from "../tools/skill/index.js";
 import { buildToolViewTool } from "../tools/tool-view/index.js";
+import { buildToolRecallTool } from "../tools/tool-recall.js";
 import { registerMemoryTools } from "../tools/memory/index.js";
 import { registerTaskTools } from "../tools/tasks/index.js";
 import {
@@ -1526,6 +1527,7 @@ export async function createAgentRuntime(
   registerGithubTools(toolRegistry, dangerous);
   registerSkillTools(toolRegistry, skillRegistry, dangerous);
   toolRegistry.register(buildToolViewTool());
+  toolRegistry.register(buildToolRecallTool(blobStore));
   registerMemoryTools(toolRegistry, {
     profileStore,
     profileEnabled: config.memory.profile.enabled,
