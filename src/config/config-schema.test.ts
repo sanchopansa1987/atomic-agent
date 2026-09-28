@@ -91,6 +91,46 @@ describe("parseUserConfigFile", () => {
     expect(parsed).toEqual(USER_CONFIG_DEFAULTS);
   });
 
+  it("defaults blobStore when the section is absent", () => {
+    expect(parseUserConfigFile({ version: USER_CONFIG_VERSION }).blobStore).toEqual({
+      maxBytes: 500_000_000,
+      blobTTLDays: 30,
+    });
+  });
+
+  it("accepts explicit positive blobStore values", () => {
+    expect(
+      parseUserConfigFile({
+        version: USER_CONFIG_VERSION,
+        blobStore: { maxBytes: 1234, blobTTLDays: 7 },
+      }).blobStore,
+    ).toEqual({ maxBytes: 1234, blobTTLDays: 7 });
+  });
+
+  it("rejects invalid or non-positive blobStore values", () => {
+    for (const field of ["maxBytes", "blobTTLDays"]) {
+      for (const value of [0, -1, 1.5, null, true, "invalid", {}, []]) {
+        expect(() =>
+          parseUserConfigFile({
+            version: USER_CONFIG_VERSION,
+            blobStore: { [field]: value },
+          }),
+        ).toThrow(new RegExp(`blobStore\\.${field}`));
+      }
+    }
+  });
+
+  it("rejects a malformed blobStore section", () => {
+    for (const blobStore of [null, false, 10, "invalid", []]) {
+      expect(() => parseUserConfigFile({ blobStore })).toThrow(/blobStore/);
+    }
+  });
+
+  it("fills missing blobStore fields from defaults", () => {
+    expect(parseUserConfigFile({ blobStore: { maxBytes: 1000 } }).blobStore)
+      .toEqual({ maxBytes: 1000, blobTTLDays: 30 });
+  });
+
   it("accepts a fully specified config and normalises it", () => {
     const parsed = parseUserConfigFile({
       version: USER_CONFIG_VERSION,

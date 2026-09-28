@@ -264,6 +264,11 @@ export interface AtomicAgentConfig {
    * secrets were silently dropped (#59).
    */
   dotenv: DotenvLoadResult;
+  /** Content-addressed session blob storage limits. */
+  blobStore: {
+    maxBytes: number;
+    blobTTLDays: number;
+  };
   paths: {
     stateDir: string;
     sessionsDbFile: string;
@@ -1526,6 +1531,11 @@ export interface UserConfigFile {
    * newer file with its own version. See `parseUserConfigFile`.
    */
   version: number;
+  /** Content-addressed session blob storage limits. */
+  blobStore: {
+    maxBytes: number;
+    blobTTLDays: number;
+  };
   // NB: keys from a newer schema ride along on the object at runtime (see
   // `unknownTopLevelKeys`) but are deliberately absent from this type. An
   // index signature here would make every property name valid on the type
@@ -2580,6 +2590,10 @@ const SUPPORTED_INPUT_VERSIONS: readonly number[] = [
 
 export const USER_CONFIG_DEFAULTS: UserConfigFile = {
   version: USER_CONFIG_VERSION,
+  blobStore: {
+    maxBytes: 500_000_000,
+    blobTTLDays: 30,
+  },
   localModels: {
     url: "http://127.0.0.1:8080",
     mode: "external",
@@ -4379,6 +4393,14 @@ export function parseUserConfigFile(raw: unknown): UserConfigFile {
 
   const localModels =
     (obj.localModels as Record<string, unknown> | undefined) ?? {};
+  if (obj.blobStore !== undefined && (
+    obj.blobStore === null || typeof obj.blobStore !== "object" ||
+    Array.isArray(obj.blobStore)
+  )) {
+    throw new ConfigValidationError("blobStore", "expected an object");
+  }
+  const blobStore =
+    (obj.blobStore as Record<string, unknown> | undefined) ?? {};
   const log = (obj.log as Record<string, unknown> | undefined) ?? {};
   const agent = (obj.agent as Record<string, unknown> | undefined) ?? {};
   const http = (obj.http as Record<string, unknown> | undefined) ?? {};
@@ -4598,6 +4620,20 @@ export function parseUserConfigFile(raw: unknown): UserConfigFile {
     // A file from a newer build keeps its own version. Stamping ours here
     // is what turns "read a newer file" into "silently downgrade it".
     version: Math.max(version, USER_CONFIG_VERSION),
+    blobStore: {
+      maxBytes: parsePositiveInt(
+        blobStore.maxBytes === undefined
+          ? USER_CONFIG_DEFAULTS.blobStore.maxBytes
+          : blobStore.maxBytes,
+        "blobStore.maxBytes",
+      ),
+      blobTTLDays: parsePositiveInt(
+        blobStore.blobTTLDays === undefined
+          ? USER_CONFIG_DEFAULTS.blobStore.blobTTLDays
+          : blobStore.blobTTLDays,
+        "blobStore.blobTTLDays",
+      ),
+    },
     localModels: {
       url: localModelsUrl,
       mode: localModelsMode,

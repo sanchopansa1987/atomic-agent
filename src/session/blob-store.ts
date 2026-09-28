@@ -74,29 +74,27 @@ export class BlobStore {
   }
 
   /**
-   * Best-effort GC. Walks the store, and if total bytes > maxBytes
-   * deletes oldest-first (by mtime) until total <= maxBytes.
+   * Best-effort GC. Removes blobs older than maxAgeMs (if supplied), then
+   * if total bytes > maxBytes deletes oldest-first (by mtime) until total <= maxBytes.
    */
-  async gc(maxBytes: number): Promise<GcResult> {
+  async gc(maxBytes: number, maxAgeMs?: number): Promise<GcResult> {
     const entries = await this.walk();
-    const total = entries.reduce((sum, e) => sum + e.size, 0);
-    if (total <= maxBytes) return { removed: 0, freedBytes: 0 };
-
-    // Oldest first.
-    entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
-
     let removed = 0;
     let freed = 0;
-    let remaining = total;
+
+    // Oldest first: expire aged blobs even when the store is under budget.
+    const cutoff = maxAgeMs === undefined ? -Infinity : Date.now() - maxAgeMs;
+    entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    let remaining = entries.reduce((sum, e) => sum + e.size, 0);
     for (const entry of entries) {
-      if (remaining <= maxBytes) break;
+      if (entry.mtimeMs >= cutoff && remaining <= maxBytes) break;
       try {
         await unlink(entry.path);
         removed += 1;
         freed += entry.size;
         remaining -= entry.size;
       } catch {
-        // Best-effort — skip on unlink error.
+        // Best-effort: failed deletions still count against the byte budget.
       }
     }
     return { removed, freedBytes: freed };

@@ -54,6 +54,7 @@ import { buildSkillCatalog } from "../skills/index.js";
 import type { LogRecord } from "../tracing/structured-logger.js";
 import type { AgentLoopEvent } from "../agent/agent-loop.js";
 import type { CompletionResult } from "../llm/llama-server-client.js";
+import { BlobStore } from "../session/blob-store.js";
 
 class FakeBackend implements BrowserBackend {
   public shutdowns = 0;
@@ -148,6 +149,36 @@ describe("createAgentRuntime", () => {
       expect(names).toContain("skill.run_script");
     } finally {
       await runtime.shutdown();
+    }
+  });
+
+  it("wires blobStore limits into runtime startup GC", async () => {
+    writeUserConfigFileSync(getUserConfigPath(stateDir), {
+      ...USER_CONFIG_DEFAULTS,
+      blobStore: { maxBytes: 1234, blobTTLDays: 7 },
+    });
+
+    const gc = vi
+      .spyOn(BlobStore.prototype, "gc")
+      .mockResolvedValue({ removed: 0, freedBytes: 0 });
+
+    try {
+      const runtime = await createAgentRuntime({
+        workingDir,
+        approvalLevel: 5,
+        overrides: {
+          browserBackend: backend,
+          skipLlamaHealthCheck: true,
+        },
+      });
+      try {
+        expect(runtime.blobStore).toBeInstanceOf(BlobStore);
+        expect(gc).toHaveBeenCalledWith(1234, 7 * 24 * 60 * 60 * 1000);
+      } finally {
+        await runtime.shutdown();
+      }
+    } finally {
+      gc.mockRestore();
     }
   });
 

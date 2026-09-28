@@ -60,6 +60,18 @@ describe("loadConfig", () => {
     expect(written.agent.conversationMaxPairs).toBe(200);
   });
 
+  it("resolves explicit blobStore values", () => {
+    writeUserConfigFileSync(getUserConfigPath(stateDir), {
+      ...USER_CONFIG_DEFAULTS,
+      blobStore: { maxBytes: 1234, blobTTLDays: 7 },
+    });
+    resetConfigCache();
+    expect(loadConfig().blobStore).toEqual({
+      maxBytes: 1234,
+      blobTTLDays: 7,
+    });
+  });
+
   it("maps ATOMIC_AGENT_LLAMA_MAX_TOKENS to completionMaxTokens with bounds", () => {
     process.env.ATOMIC_AGENT_LLAMA_MAX_TOKENS = "8192";
     resetConfigCache();

@@ -200,6 +200,7 @@ import {
   type SessionLlmStamp,
   type SessionState,
 } from "../session/index.js";
+import { BlobStore } from "../session/blob-store.js";
 
 import { TaskRunner, TaskStore } from "../tasks/index.js";
 import { Scheduler } from "../scheduler/index.js";
@@ -350,6 +351,7 @@ export interface AgentRuntime {
   readonly approvals: ApprovalGate;
   readonly slotManager: SlotManager;
   readonly sessionStore: SessionStore;
+  readonly blobStore: BlobStore;
   /**
    * Single per-session turn-ownership primitive shared by every
    * caller of `runTurn` — CLI, TUI, HTTP, sidecar, and the future
@@ -1417,6 +1419,20 @@ export async function createAgentRuntime(
         db: notesStore.getDatabaseHandleForEmbeddings(),
       })
     : null;
+
+  const blobStore = new BlobStore({
+    rootDir: resolve(config.paths.stateDir, "blobs"),
+  });
+  try {
+    await blobStore.gc(
+      config.blobStore.maxBytes,
+      config.blobStore.blobTTLDays * 24 * 60 * 60 * 1000,
+    );
+  } catch (err) {
+    logger.warn("blob store garbage collection failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   // Constructed before the tool registry: `os.fs.locate_project`
   // (issue #77) reads recent-session working dirs through the
@@ -3438,6 +3454,7 @@ export async function createAgentRuntime(
     approvals,
     slotManager,
     sessionStore,
+    blobStore,
     turnController,
     steeringInbox,
     steer,

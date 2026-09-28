@@ -150,6 +150,7 @@ export function loadConfig(): AtomicAgentConfig {
 
   return {
     dotenv,
+    blobStore: { ...user.blobStore },
     localModels: {
       url: resolvedLocalLlmUrl,
       apiKey: readEnv("ATOMIC_AGENT_LLAMA_API_KEY") ?? null,
