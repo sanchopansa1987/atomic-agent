@@ -1,4 +1,9 @@
-import type { CompressedToolResult } from "../compressor/result-compressor.js";
+import {
+  BLOB_OUTPUT_THRESHOLD_CHARS,
+  RAW_TOOL_OUTPUT,
+  type CompressedToolResult,
+} from "../compressor/result-compressor.js";
+import type { BlobStore } from "../session/blob-store.js";
 import { coerceToolArgs } from "./coerce-tool-args.js";
 import type { ToolRole } from "./tool-roles.js";
 
@@ -61,6 +66,8 @@ export class ToolNotFoundError extends Error {
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolDefinition>();
 
+  constructor(private readonly blobStore?: BlobStore) {}
+
   register(definition: ToolDefinition): void {
     this.tools.set(definition.name, definition);
   }
@@ -99,6 +106,22 @@ export class ToolRegistry {
     // number as "200000", an array as "[\"a.png\"]"). Unwrap those
     // before dispatch; anything that cannot be coerced is passed
     // through untouched so the tool reports its own error.
-    return tool.run(coerceToolArgs(name, args), ctx);
+    const returned = await tool.run(coerceToolArgs(name, args), ctx);
+    const { [RAW_TOOL_OUTPUT]: rawOutput, ...result } = returned;
+    if (!this.blobStore || ["reply", "finish", "tool.recall"].includes(name)) {
+      return result;
+    }
+    const body = rawOutput ?? result.summary;
+    if (body.length <= BLOB_OUTPUT_THRESHOLD_CHARS) return result;
+    try {
+      return { ...result, blob: await this.blobStore.put(body) };
+    } catch {
+      // The tool already ran: a storage failure must not turn it into a
+      // failed action that the agent may repeat, or advertise a missing blob.
+      return {
+        ...result,
+        details: { ...result.details, blobStoreError: "Full output could not be saved." },
+      };
+    }
   }
 }

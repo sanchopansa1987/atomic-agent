@@ -24,7 +24,7 @@ const MIN_SHARE_CHARS = 600;
  * re-read the same five files three times in a row trying to see them.
  */
 export function capBatchSummaries(
-  results: readonly { tool: string; summary: string }[],
+  results: readonly { tool: string; summary: string; blob?: string }[],
   calls: readonly { args?: Record<string, unknown> }[],
   capChars: number,
 ): string[] {
@@ -36,6 +36,11 @@ export function capBatchSummaries(
   );
   return results.map((r, i) => {
     if (r.summary.length <= share) return r.summary;
+    // Recall uses exact character offsets. Keep a plain prefix so its next
+    // offset accounts only for the content shown, not a truncation marker.
+    if (r.tool === "tool.recall" && r.blob !== undefined) {
+      return r.summary.slice(0, share);
+    }
     if (r.tool === "os.fs.read") {
       return capReadSummary(
         r.summary,

@@ -55,6 +55,7 @@ import type { LogRecord } from "../tracing/structured-logger.js";
 import type { AgentLoopEvent } from "../agent/agent-loop.js";
 import type { CompletionResult } from "../llm/llama-server-client.js";
 import { BlobStore } from "../session/blob-store.js";
+import { compressToolResult } from "../compressor/result-compressor.js";
 
 class FakeBackend implements BrowserBackend {
   public shutdowns = 0;
@@ -201,9 +202,58 @@ describe("createAgentRuntime", () => {
         tool: "tool.recall",
         status: "ok",
         summary: content,
-        details: { blob, bytes: Buffer.byteLength(content, "utf8") },
+        blob,
+        blobOffset: 0,
+        details: { blob, bytes: Buffer.byteLength(content, "utf8"), offset: 0 },
         truncated: false,
       });
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("saves original tool output and recalls it through a persisted turn reference", async () => {
+    let sessionId = "";
+    let calls = 0;
+    let followupPrompt = "";
+    const original = "ORIGINAL START  \r\n\r\n" + "a long output line\n".repeat(5000);
+    const runtime = await createAgentRuntime({
+      workingDir,
+      approvalLevel: 5,
+      overrides: {
+        browserBackend: backend,
+        skipLlamaHealthCheck: true,
+        llamaComplete: async (params) => {
+          if (params.sessionId !== sessionId) return completion("{}");
+          calls += 1;
+          if (calls === 1) return completion(JSON.stringify([{ tool: "os.fs.read", args: { path: "fixture.txt" } }]));
+          followupPrompt = params.prompt;
+          return completion(JSON.stringify([{ tool: "reply", args: { text: "done" } }]));
+        },
+      },
+    });
+    runtime.toolRegistry.register({
+      name: "os.fs.read", description: "large-output fixture", readonly: true,
+      run: async () => compressToolResult({ tool: "os.fs.read", status: "ok", output: original }),
+    });
+    try {
+      const session = runtime.createSession();
+      sessionId = session.id;
+      const result = await runtime.runTurn(session, "Read fixture.txt", { maxSteps: 4 });
+      expect(result.reason).toBe("reply");
+      expect(calls).toBe(2);
+      const persisted = runtime.sessionStore.load(sessionId)!;
+      const turn = persisted.turns.find((t) => t.kind === "tool_result" && t.tool === "os.fs.read");
+      expect(turn?.kind).toBe("tool_result");
+      if (turn?.kind !== "tool_result") throw new Error("missing stored result");
+      expect(turn.blob).toMatch(/^[a-f0-9]{64}$/);
+      expect(followupPrompt).toContain(`tool.recall {"blob":"${turn.blob}"}`);
+      expect(JSON.stringify(persisted)).not.toContain("ORIGINAL START");
+      expect(await new BlobStore({ rootDir: join(stateDir, "blobs") }).get(turn.blob!)).toBe(original);
+      const recalled = await runtime.toolRegistry.invoke("tool.recall", { blob: turn.blob, offset: 64000 }, {
+        workingDir, sessionId, stepIndex: 2, signal: new AbortController().signal,
+      });
+      expect(recalled.summary).toBe(original.slice(64000, 72000));
     } finally {
       await runtime.shutdown();
     }

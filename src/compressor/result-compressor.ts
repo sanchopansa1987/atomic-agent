@@ -1,3 +1,8 @@
+// Symbols survive tool wrappers that spread results, but never JSON serialization.
+// The registry consumes this transient body before emitting or saving the result.
+export const RAW_TOOL_OUTPUT = Symbol("rawToolOutput");
+export const BLOB_OUTPUT_THRESHOLD_CHARS = 8_000;
+
 export interface RawToolResult {
   tool: string;
   status: "ok" | "error";
@@ -11,6 +16,10 @@ export interface CompressedToolResult {
   summary: string;
   details: Record<string, unknown>;
   truncated: boolean;
+  blob?: string;
+  /** Character offset of a recalled page within its blob. */
+  blobOffset?: number;
+  [RAW_TOOL_OUTPUT]?: string;
 }
 
 export interface CompressorOptions {
@@ -51,6 +60,9 @@ export function compressToolResult(
     summary,
     details: raw.details ?? {},
     truncated: tailTruncated || overLength,
+    ...(raw.output.length > BLOB_OUTPUT_THRESHOLD_CHARS
+      ? { [RAW_TOOL_OUTPUT]: raw.output }
+      : {}),
   };
 }
 

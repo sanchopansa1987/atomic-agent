@@ -1799,6 +1799,7 @@ async function executeStepInner(
       tool: result.tool,
       status: result.status,
       summary: result.summary,
+      ...(result.blob !== undefined ? { blob: result.blob } : {}),
       ...(result.details !== undefined ? { details: result.details } : {}),
     });
     nextSession = applyStateEffects(nextSession, result);
@@ -3591,6 +3592,8 @@ function appendBatchedTurns(params: AppendBatchedTurnsParams): SessionState {
             tool: result.tool,
             status: result.status,
             summary: cappedSummary,
+            ...(result.blob !== undefined ? { blob: result.blob } : {}),
+            ...(result.blobOffset !== undefined ? { blobOffset: result.blobOffset } : {}),
             ...(result.truncated || cappedTruncated ? { truncated: true } : {}),
           }),
         );
@@ -3648,6 +3651,8 @@ function appendBatchedTurns(params: AppendBatchedTurnsParams): SessionState {
         tool: result.tool,
         status: result.status,
         summary: cappedSummary,
+        ...(result.blob !== undefined ? { blob: result.blob } : {}),
+        ...(result.blobOffset !== undefined ? { blobOffset: result.blobOffset } : {}),
         ...(result.truncated || cappedTruncated ? { truncated: true } : {}),
       }),
     );

@@ -59,8 +59,8 @@ export const DEFAULT_TOOL_DESCRIPTORS_B: readonly ToolDescriptor[] = [
   },
   {
     name: "tool.recall",
-    summary: "Recall stored blob content verbatim, up to 64,000 characters.",
-    argsSchema: "{ blob: string /* 64-char SHA-256 */ }",
+    summary: "Read a stored output page verbatim; use its next offset to continue.",
+    argsSchema: "{ blob: string /* 64-char SHA-256 */, offset?: number /* zero-based character offset, default 0 */, limit?: number /* 1–8000 characters, default 8000 */ }",
   },
   {
     name: "skill.run_script",

@@ -30,6 +30,7 @@ describe("tool.recall", () => {
     expect(result.details).toEqual({
       blob,
       bytes: Buffer.byteLength(content, "utf8"),
+      offset: 0,
     });
     expect(result.truncated).toBe(false);
   });
@@ -46,7 +47,8 @@ describe("tool.recall", () => {
       stepIndex: 0,
       signal: new AbortController().signal,
     });
-    expect(result.summary).toBe(content.slice(0, 64_000));
+    expect(result.summary).toBe(content.slice(0, 8_000));
+    expect(result.details.nextOffset).toBe(8_000);
     expect(result.truncated).toBe(true);
     expect(result.details.bytes).toBe(Buffer.byteLength(content, "utf8"));
   });
@@ -64,6 +66,32 @@ describe("tool.recall", () => {
         signal: new AbortController().signal,
       }),
     ).rejects.toThrow(/64-character/);
+  });
+
+  it("recovers the entire original, including content beyond the old 64000-character ceiling", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "atomic-tool-recall-"));
+    dirs.push(dir);
+    const store = new BlobStore({ rootDir: dir });
+    const content = "α  \r\n\r\n😀\n".repeat(9000) + "FINAL MARKER";
+    const blob = await store.put(content);
+    const tool = buildToolRecallTool(store);
+    const ctx = { workingDir: dir, sessionId: "test", stepIndex: 0, signal: new AbortController().signal };
+    let recovered = "";
+    let offset = 0;
+    while (offset < content.length) {
+      const result = await tool.run({ blob, offset }, ctx);
+      expect(result.summary.length).toBeGreaterThan(0);
+      expect(result.summary.length).toBeLessThanOrEqual(8000);
+      recovered += result.summary;
+      offset += result.summary.length;
+      expect(result.truncated).toBe(offset < content.length);
+      expect(result.details.nextOffset).toBe(offset < content.length ? offset : undefined);
+    }
+    expect(recovered).toBe(content);
+    expect((await tool.run({ blob, offset: content.length }, ctx)).summary).toBe("");
+    for (const args of [{ offset: -1 }, { offset: 1.5 }, { offset: null }, { offset: content.length + 1 }, { limit: 0 }, { limit: 8001 }]) {
+      await expect(tool.run({ blob, ...args }, ctx)).rejects.toThrow(/tool.recall/);
+    }
   });
 
   it("rejects a valid hash that is not stored", async () => {

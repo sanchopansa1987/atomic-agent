@@ -1460,7 +1460,7 @@ export async function createAgentRuntime(
     deleteSession(id);
   };
 
-  const toolRegistry = new ToolRegistry();
+  const toolRegistry = new ToolRegistry(blobStore);
   toolRegistry.register(finishTool);
   toolRegistry.register(replyTool);
   if (config.browser.enabled) {

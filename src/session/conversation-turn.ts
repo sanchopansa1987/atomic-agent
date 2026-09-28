@@ -21,6 +21,9 @@ export type ConversationTurn =
       tool: string;
       status: "ok" | "error";
       summary: string;
+      /** Hash of the original tool output in the runtime blob store. */
+      blob?: string;
+      blobOffset?: number;
       truncated?: boolean;
       at: number;
     }
@@ -77,6 +80,8 @@ export function toolResultTurn(params: {
   tool: string;
   status: "ok" | "error";
   summary: string;
+  blob?: string;
+  blobOffset?: number;
   truncated?: boolean;
   at?: number;
 }): ConversationTurn {
@@ -85,6 +90,8 @@ export function toolResultTurn(params: {
     tool: params.tool,
     status: params.status,
     summary: params.summary,
+    ...(params.blob !== undefined ? { blob: params.blob } : {}),
+    ...(params.blobOffset !== undefined ? { blobOffset: params.blobOffset } : {}),
     at: params.at ?? Date.now(),
   };
   if (params.truncated) return { ...turn, truncated: true };
@@ -224,6 +231,26 @@ export function renderTurnForPrompt(
  * `tool` message, which is why it is exported rather than inlined.
  */
 export function renderToolResultBody(
+  turn: Extract<ConversationTurn, { kind: "tool_result" }>,
+  options: RenderTurnOptions,
+): string {
+  if (turn.blob !== undefined && /^[a-f0-9]{64}$/.test(turn.blob)) {
+    if (turn.tool === "tool.recall") {
+      // A page can also be shortened by the per-batch budget. Advance only
+      // past text actually shown, never past a hidden part of the page.
+      const body = turn.summary.slice(0, TOOL_RESULT_RENDER_CAP_CHARS);
+      const more = turn.truncated || body.length < turn.summary.length;
+      return more
+        ? `${body}\n[Continue: tool.recall ${JSON.stringify({ blob: turn.blob, offset: (turn.blobOffset ?? 0) + body.length })}]`
+        : body;
+    }
+    // Append after all caps, including historical read and duplicate caps.
+    return `${renderToolResultPreview(turn, options)}\n[Stored output: tool.recall ${JSON.stringify({ blob: turn.blob })}]`;
+  }
+  return renderToolResultPreview(turn, options);
+}
+
+function renderToolResultPreview(
   turn: Extract<ConversationTurn, { kind: "tool_result" }>,
   options: RenderTurnOptions,
 ): string {

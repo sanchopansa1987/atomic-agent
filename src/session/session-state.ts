@@ -48,6 +48,7 @@ export interface LatestResult {
   tool: string;
   status: "ok" | "error";
   summary: string;
+  blob?: string;
   details?: Record<string, unknown>;
 }
 

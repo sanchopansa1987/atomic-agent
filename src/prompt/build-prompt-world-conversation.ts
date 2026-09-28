@@ -129,6 +129,12 @@ function* packedTurnRenderOptions(
       hash.update(turn.status);
       hash.update("\u0000");
       hash.update(turn.summary);
+      // Equal summaries may represent different originals after compression.
+      if (turn.blob !== undefined) {
+        hash.update("\u0000");
+        hash.update(turn.blob);
+        hash.update(`:${turn.blobOffset ?? 0}`);
+      }
       const key = hash.digest("hex");
       const prior = seenToolResults.get(key);
       if (prior !== undefined) {
