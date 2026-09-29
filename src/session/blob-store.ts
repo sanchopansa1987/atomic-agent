@@ -12,7 +12,8 @@
  * `gc()` drops oldest-first when the store exceeds a byte budget.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -47,6 +48,26 @@ export class BlobStore {
     }
     await mkdir(this.dirFor(hash), { recursive: true });
     await writeFile(path, content, "utf8");
+    return hash;
+  }
+
+  /** Synchronous counterpart for legacy session reads; publish only complete files. */
+  putSync(content: string): string {
+    const hash = createHash("sha256").update(content, "utf8").digest("hex");
+    const path = this.pathFor(hash);
+    try {
+      if (readFileSync(path, "utf8") === content) return hash;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    mkdirSync(this.dirFor(hash), { recursive: true });
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, content, { encoding: "utf8", flag: "wx" });
+      renameSync(temporary, path);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
     return hash;
   }
 

@@ -6,6 +6,8 @@ import { getConfig } from "../config/index.js";
 import { stripEphemeral, type SessionState } from "./session-state.js";
 import { normalizeSessionState } from "./normalize-session-state.js";
 import type { SessionSummary } from "./session-summary.js";
+import type { BlobStore } from "./blob-store.js";
+import { migrateSessionBlobs } from "./migrate-session-blobs.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -89,6 +91,7 @@ function toText(value: unknown): string | null {
 
 export interface SessionStoreOptions {
   dbFile?: string;
+  blobStore?: BlobStore;
 }
 
 /** Narrow projection returned by `listRecentWorkingDirs`. */
@@ -103,6 +106,7 @@ export interface RecentWorkingDirRow {
  * over schema stability. A columnar migration can come later.
  */
 export class SessionStore {
+  private readonly blobStore: BlobStore | undefined;
   private readonly db: Database.Database;
   private readonly insertStmt: Database.Statement;
   private readonly updateStmt: Database.Statement;
@@ -122,6 +126,7 @@ export class SessionStore {
   private unreadableSkips = 0;
 
   constructor(options: SessionStoreOptions = {}) {
+    this.blobStore = options.blobStore;
     const config = getConfig();
     const file = options.dbFile ?? config.paths.sessionsDbFile;
     mkdirSync(dirname(file), { recursive: true });
@@ -239,11 +244,21 @@ export class SessionStore {
    * out of every list and empty the rail; now it is skipped and counted.
    */
   private readPayload(row: { payload: string }): SessionState | null {
+    let state: SessionState;
     try {
-      return normalizeSessionState(JSON.parse(row.payload));
+      state = normalizeSessionState(JSON.parse(row.payload));
     } catch {
       this.unreadableSkips += 1;
       return null;
+    }
+    if (!this.blobStore) return state;
+    try {
+      const migrated = migrateSessionBlobs(state, this.blobStore);
+      if (migrated !== state) this.save(migrated);
+      return migrated;
+    } catch {
+      // Storage failure is not a corrupt session. Keep its full text and retry later.
+      return state;
     }
   }
 

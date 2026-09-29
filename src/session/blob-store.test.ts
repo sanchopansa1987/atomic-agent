@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, readdir, rm, stat, unlink, utimes } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -54,6 +54,25 @@ it("get returns the exact content that was put", async () => {
     const content = "line one\nline two\nline three\n";
     const hash = await store.put(content);
     expect(await store.get(hash)).toBe(content);
+  });
+});
+
+it("putSync shares async hashes, preserves existing files, and repairs partial blobs", async () => {
+  await withTmp(async (dir) => {
+    const store = new BlobStore({ rootDir: dir });
+    const content = "legacy text 😀  \r\n\r\n";
+    const hash = store.putSync(content);
+    expect(await store.get(hash)).toBe(content);
+    expect(await store.put(content)).toBe(hash);
+    const path = join(dir, hash.slice(0, 2), hash.slice(2));
+    const oldTime = new Date("2020-01-01T00:00:00Z");
+    await utimes(path, oldTime, oldTime);
+    expect(store.putSync(content)).toBe(hash);
+    expect((await stat(path)).mtimeMs).toBe(oldTime.getTime());
+    await writeFile(path, "partial", "utf8");
+    expect(store.putSync(content)).toBe(hash);
+    expect(await store.get(hash)).toBe(content);
+    expect(await countFiles(dir)).toBe(1);
   });
 });
 

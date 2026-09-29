@@ -183,7 +183,7 @@ describe("createAgentRuntime", () => {
     }
   });
 
-  it("recalls content from the runtime's shared blob store", async () => {
+  it("recalls content and migrated legacy results from the runtime's shared blob store", async () => {
     const runtime = await createAgentRuntime({
       workingDir,
       approvalLevel: 5,
@@ -207,6 +207,19 @@ describe("createAgentRuntime", () => {
         details: { blob, bytes: Buffer.byteLength(content, "utf8"), offset: 0 },
         truncated: false,
       });
+      const legacy = runtime.createSession();
+      const oldSummary = "legacy output\n".repeat(1000);
+      runtime.sessionStore.save({
+        ...legacy,
+        turns: [{ kind: "tool_result", tool: "os.fs.read", status: "ok", summary: oldSummary, at: 1 }],
+      });
+      const migrated = runtime.sessionStore.load(legacy.id)!.turns[0]!;
+      if (migrated.kind !== "tool_result") throw new Error("missing migrated result");
+      expect(await runtime.blobStore.get(migrated.blob!)).toBe(oldSummary);
+      const recalled = await runtime.toolRegistry.invoke("tool.recall", { blob: migrated.blob, offset: 8000 }, {
+        workingDir, sessionId: legacy.id, stepIndex: 0, signal: new AbortController().signal,
+      });
+      expect(recalled.summary).toBe(oldSummary.slice(8000));
     } finally {
       await runtime.shutdown();
     }

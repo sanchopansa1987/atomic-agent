@@ -1439,7 +1439,7 @@ export async function createAgentRuntime(
   // (issue #77) reads recent-session working dirs through the
   // column-only `listRecentWorkingDirs` projection, so the store must
   // exist by the time `registerOsTools` wires the closure below.
-  const sessionStore = new SessionStore();
+  const sessionStore = new SessionStore({ blobStore });
   // The commands `os.shell.run` detached at the default timeout (F47).
   // One registry for the runtime, so the turn-end (`executeTurn`),
   // session-delete and shutdown paths below can stop what a session
