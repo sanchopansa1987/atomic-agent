@@ -2131,14 +2131,12 @@ export class LocalModelsOrchestrator {
    */
   private reconcileHybridRecallFromDaemon(emb: EmbeddingDaemonInfo): void {
     const cfg = getConfig();
-    const dataDir = cfg.paths.localModelsDataDir;
-    const modelId = cfg.localModels.embeddings.modelId;
-    const hasModel =
-      modelId !== null &&
-      isKnownEmbeddingModelId(modelId) &&
-      isEmbeddingModelDownloaded(dataDir, getEmbeddingModelDef(modelId));
+    // The embedding daemon's own liveness (pidfile) is the source of truth.
+    // The managed model-file check (`isEmbeddingModelDownloaded`) is wrong for
+    // an external embedding endpoint (e.g. the 19092 shim proxying Ollama),
+    // which serves its model itself and has no file under `<dataDir>/models/…`.
     const shouldEnable =
-      cfg.localModels.embeddings.enabled && hasModel && emb.running;
+      cfg.localModels.embeddings.enabled && emb.running;
     if (cfg.memory.embeddings.enabled === shouldEnable) return;
     persistMemoryEmbeddingsEnabled(shouldEnable);
   }
