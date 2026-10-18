@@ -25,6 +25,8 @@ export interface CompressedToolResult {
 export interface CompressorOptions {
   maxSummaryLength: number;
   maxTailLines: number;
+  /** Source reads must preserve blank lines and indentation. */
+  preserveWhitespace?: boolean;
 }
 
 const DEFAULTS: CompressorOptions = {
@@ -42,8 +44,12 @@ export function compressToolResult(
   options: Partial<CompressorOptions> = {},
 ): CompressedToolResult {
   const merged = { ...DEFAULTS, ...options };
-  const normalised = raw.output.replace(/\r\n/g, "\n").trimEnd();
-  const { text: tail, truncated: tailTruncated } = extractTail(
+  const normalised = merged.preserveWhitespace
+    ? raw.output
+    : raw.output.replace(/\r\n/g, "\n").trimEnd();
+  const { text: tail, truncated: tailTruncated } = merged.preserveWhitespace
+    ? { text: normalised, truncated: false }
+    : extractTail(
     normalised,
     merged.maxTailLines,
   );

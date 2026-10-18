@@ -389,6 +389,7 @@ describe("conversation-turn helpers", () => {
         droppedPairs: 0,
         boundBy: null,
         packStart: null,
+        overBudget: null,
       });
     });
 

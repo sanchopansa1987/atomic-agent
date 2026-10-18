@@ -1,4 +1,9 @@
 import { resolveToolName } from "./tool-name-resolution.js";
+import { projectWorkflowGuard } from "./project-workflow.js";
+import {
+  renderBudgetBlockHandoff,
+  type PackedConversationOverBudget,
+} from "../session/conversation-turn.js";
 import {
   extractReasoning,
   parseToolCalls,
@@ -88,6 +93,14 @@ import { getDefaultArgsJsonSchema } from "../prompt/default-tool-args-schemas.js
 import { validateJsonSchemaValue } from "../llm/provider/openai/coerce-json-schema-value.js";
 import { buildPrompt } from "../prompt/build-prompt.js";
 import type { BuiltPrompt } from "../prompt/build-prompt.js";
+import {
+  extractQuery,
+  formatForPrompt,
+  getTdaiGatewayConfig,
+  injectSectionBeforeConversation,
+  prependSectionToLastUserTurn,
+  searchMemory,
+} from "../memory/tdai-gateway.js";
 import type { BuildPromptInput } from "../prompt/build-prompt-types.js";
 import { formatCurrentDate } from "../prompt/current-date.js";
 import type {
@@ -141,7 +154,9 @@ import {
   hasStrictFunctionTools,
   type ToolCallAdapter,
 } from "../llm/provider/adapters/tool-call-adapter.js";
-import { openAiToolCallAdapter } from "../llm/provider/openai/openai-tool-call-adapter.js";
+import { nameEscape, openAiToolCallAdapter } from "../llm/provider/openai/openai-tool-call-adapter.js";
+import { buildNativeMessages } from "../llm/provider/openai/openai-native-messages.js";
+import { CONVERSATION_CAP_AUTO_FALLBACK, estimateTokens } from "../prompt/token-budget.js";
 import type { ProfileFact } from "../memory/profile-store.js";
 import type { AgentMetrics } from "../tracing/agent-metrics.js";
 import type { StructuredLogger } from "../tracing/structured-logger.js";
@@ -191,6 +206,8 @@ export interface LlmStreamParams {
    */
   cachePrompt?: boolean;
   sessionId: string;
+  /** Only the agent step marks main conversation work; side calls stay auxiliary. */
+  requestKind?: "main" | "auxiliary";
   /**
    * Optional `n_predict` cap for this completion. Falls through to
    * `config.localModels.completionMaxTokens` when omitted. Used by the
@@ -553,6 +570,26 @@ export class BatchValidationError extends Error {
 }
 
 /**
+ * The prompt the step built is over its conversation budget and cannot be
+ * cut to fit: the protected slice (the active task's user turn and its
+ * complete tool exchanges) alone costs more than the cap. `executeStep`
+ * raises this **before** any provider request is opened, so a task that
+ * cannot be sent is a block, not an oversized submission. The caller ends
+ * the turn with `handoff` (a saved continuation note) instead.
+ */
+export class ContextBudgetExceededError extends Error {
+  constructor(
+    message: string,
+    public readonly overBudget: PackedConversationOverBudget,
+    /** Compact continuation note to persist and show the operator. */
+    public readonly handoff: string,
+  ) {
+    super(message);
+    this.name = "ContextBudgetExceededError";
+  }
+}
+
+/**
  * Executes exactly one agent step: builds the prompt, calls the LLM under
  * the GBNF grammar, parses the resulting tool call, runs the tool,
  * appends `assistant_tool_call` + `tool_result` (or `assistant_reply`)
@@ -568,8 +605,46 @@ export async function executeStep(
   deps: StepDependencies,
 ): Promise<StepOutcome> {
   try {
-    return await executeStepInner(ctx, deps);
+    // Guard every submission, including streaming and parse-repair retries.
+    const checkRequest = (params: LlmStreamParams): void => {
+      const config = getConfig();
+      const configuredCap = config.agent.conversationMaxTokens > 0
+        ? config.agent.conversationMaxTokens : CONVERSATION_CAP_AUTO_FALLBACK;
+      const window = deps.contextWindow ?? deps.profile.contextWindow;
+      const reserve = params.maxTokens ?? params.maxOutputTokens ?? config.localModels.completionMaxTokens;
+      const budget = typeof window === "number" && Number.isFinite(window) && window > 0
+        ? Math.max(0, Math.min(configuredCap, window - reserve)) : configuredCap;
+      const tools = { tools: params.tools, tool_choice: params.toolChoice, response_format: params.responseFormat };
+      const messages = params.messages
+        ? buildNativeMessages(params.messages, { nameEscape, reasoningField: "reasoning_content" })
+        : [{ role: "user", content: params.prompt }];
+      // Estimate the full native shape, not the rendered conversation alone.
+      // Price flat fallback too; framing headroom is not a billing guarantee.
+      const requiredTokens = Math.max(
+        estimateTokens(JSON.stringify({ messages, ...tools })),
+        estimateTokens(params.prompt) + estimateTokens(JSON.stringify(tools)),
+      ) + 256;
+      if (requiredTokens <= budget) return;
+      const over = {
+        reason: `full request needs ~${requiredTokens} estimated input tokens; input budget ${budget}, output reserve ${reserve}`,
+        requiredTokens, budget, protectedTurnCount: ctx.session.turns.length,
+      };
+      throw new ContextBudgetExceededError(over.reason, over,
+        renderBudgetBlockHandoff(over, ctx.session.id, ctx.session.turns, ctx.originalRequest ?? ctx.userMessage ?? undefined));
+    };
+    const guarded = deps.toolTransport === "native_tools" ? {
+      ...deps,
+      llmComplete: (params: LlmStreamParams) => { checkRequest(params); return deps.llmComplete(params); },
+      ...(deps.llmCompleteStream ? {
+        llmCompleteStream: (params: LlmStreamParams) => { checkRequest(params); return deps.llmCompleteStream!(params); },
+      } : {}),
+    } : deps;
+    return await executeStepInner(ctx, guarded);
   } catch (err) {
+    // A budget block is a deliberate pre-flight refusal we raised before
+    // opening a provider request — not a provider/tool failure to
+    // classify. Let it reach the loop as itself.
+    if (err instanceof ContextBudgetExceededError) throw err;
     const failure = toLlmFailure(err, ctx);
     deps.onEvent?.({
       type: "step_error",
@@ -632,10 +707,14 @@ async function executeStepInner(
   // the grammar below the role's list. One array feeds the request AND
   // the parser (the adapter memoises on identity), and the batch gate
   // gets the same names — see `step-tool-set.ts`.
+  // `promptToolFilter` is description-only and must NOT narrow the wire:
+  // a tool whose full description is hidden stays callable (and the loaded
+  // tools are already retained by `descriptorsForRole`).
+  const surfacedDescriptors = roleToolDescriptors;
   const stepDescriptors =
     ctx.toolSet !== undefined
-      ? narrowDescriptorsToToolSet(roleToolDescriptors, ctx.toolSet)
-      : roleToolDescriptors;
+      ? narrowDescriptorsToToolSet(surfacedDescriptors, ctx.toolSet)
+      : surfacedDescriptors;
   const promptInput: BuildPromptInput = {
     session: ctx.session,
     // Pass the FULL descriptor list to `buildPrompt`; the role
@@ -686,6 +765,70 @@ async function executeStepInner(
       : {}),
   };
   const prompt = buildPrompt(promptInput);
+  // TencentDB memory gateway injection — config-gated, additive, silent on failure.
+  try {
+    const tdai = getTdaiGatewayConfig();
+    if (tdai.enabled) {
+      const lastUser = [...prompt.messages.turns]
+        .reverse()
+        .find((t): t is { kind: "user"; text: string } => t.kind === "user");
+      const rawQuery = ctx.userMessage ?? lastUser?.text ?? "";
+      const query = extractQuery(rawQuery);
+      if (query) {
+        const hits = await searchMemory(query, {
+          topK: tdai.topK,
+          timeoutMs: tdai.timeoutMs,
+        });
+        const section = formatForPrompt(hits);
+        if (section) {
+          prompt.text = injectSectionBeforeConversation(prompt.text, section);
+          prompt.messages = prependSectionToLastUserTurn(
+            prompt.messages,
+            section,
+          );
+          process.stderr.write(
+            `[tdai] injected ${hits.length} memory hits for query='${query.slice(0, 40)}'\n`,
+          );
+        } else {
+          process.stderr.write(
+            `[tdai] no hits for query='${query.slice(0, 40)}'\n`,
+          );
+        }
+      }
+    }
+  } catch {
+    // Never block the turn on memory injection.
+  }
+  // Pre-flight size gate — the native request budget boundary. The packer
+  // pins the active task's user turn and its complete tool exchanges; when
+  // that protected slice alone costs more than the effective conversation
+  // cap, no cut can fit it and the request we are about to open would be
+  // oversized. Refuse here, before `deps.llmComplete*` runs, so the step
+  // opens zero provider submissions and the caller ends the turn with a
+  // saved continuation handoff instead. Native-tools only: the protected
+  // cost prices `reasoning_content`, which only the native projection
+  // echoes back (a grammar-transport prompt does not send it).
+  if (
+    deps.toolTransport === "native_tools" &&
+    prompt.conversationOverBudget !== null
+  ) {
+    const over = prompt.conversationOverBudget;
+    deps.logger?.warn(
+      "active task exceeds the conversation budget; blocking the provider request",
+      {
+        sessionId: ctx.session.id,
+        stepIndex: ctx.stepIndex,
+        requiredTokens: over.requiredTokens,
+        budget: over.budget,
+        protectedTurnCount: over.protectedTurnCount,
+      },
+    );
+    throw new ContextBudgetExceededError(
+      over.reason,
+      over,
+      renderBudgetBlockHandoff(over, ctx.session.id, ctx.session.turns, ctx.originalRequest ?? ctx.userMessage ?? undefined),
+    );
+  }
   // A grammar (llama-server) fallback link behind a native-tools primary
   // still needs the legacy prefill-carrying prompt shape — its template
   // and GBNF prelude expect the reasoning open tag / turn framing at the
@@ -1644,7 +1787,9 @@ async function executeStepInner(
   // the next call, and nothing the model wrote ever widens it.
   const readRoots = userNamedPaths(ctx.session.turns);
   const runBatch = runInOrder ? executeCallsInOrder : executeBatch;
+  const workflowGuard = projectWorkflowGuard(ctx.session.workingDir, ctx.session.turns);
   const batchOutcome = await runBatch(inputs, deps.registry, {
+    ...(workflowGuard ? { workflowGuard } : {}),
     workingDir: ctx.session.workingDir,
     sessionId: ctx.session.id,
     stepIndex: ctx.stepIndex,
@@ -2475,6 +2620,7 @@ function buildLlmStreamParams(args: {
     grammar: args.grammar,
     slotId: args.slotId,
     sessionId: args.sessionId,
+    requestKind: "main",
     ...(args.signal ? { signal: args.signal } : {}),
     // The pin rides on every completion of the step: the repair retry
     // spreads `llmParams`, so it inherits without a second wiring point.

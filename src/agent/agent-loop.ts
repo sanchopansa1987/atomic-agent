@@ -71,7 +71,7 @@ import type { ProcedureIndexEntry } from "../memory/procedures/procedure-store.j
 import type { ProfileFact } from "../memory/profile-store.js";
 import type { ReflectionRunner } from "../memory/reflection/index.js";
 import type { MemoryHealthWarning } from "../memory/health/index.js";
-import { executeStep } from "./step-executor.js";
+import { ContextBudgetExceededError, executeStep } from "./step-executor.js";
 import {
   FINALIZATION_REQUEST_DEADLINE_MS,
   createRequestDeadline,
@@ -521,7 +521,13 @@ export type TaskStopCause =
   | "step_ceiling"
   | "time_ceiling"
   | "no_progress"
-  | "credit_exhausted";
+  | "credit_exhausted"
+  /**
+   * The active task's protected context (its user turn and complete tool
+   * exchanges) exceeded the conversation budget, so no request could be
+   * opened. The turn ends with a saved continuation handoff.
+   */
+  | "context_budget";
 
 export function formatTaskStoppedReply(input: {
   cause: TaskStopCause;
@@ -530,9 +536,17 @@ export function formatTaskStoppedReply(input: {
   elapsedMs: number;
   /** For `credit_exhausted`: who said so, and what they said. */
   credit?: { provider: string; detail: string };
+  /** For `context_budget`: the saved continuation handoff. */
+  handoff?: string;
 }): string {
   const minutes = Math.max(1, Math.round(input.elapsedMs / 60_000));
   const spent = `${input.stepsTaken} steps over ~${minutes} min`;
+  if (input.cause === "context_budget") {
+    return (
+      `(paused: this task's active context outgrew the conversation budget after ${spent}, so I stopped before opening another request — nothing was truncated.) ` +
+      `${input.handoff ?? "The work so far is saved in this session."}`
+    );
+  }
   if (input.cause === "credit_exhausted") {
     const who = input.credit?.provider ?? "the provider";
     const said =
@@ -1140,6 +1154,8 @@ export class AgentLoop {
     let stopCause: TaskStopCause = "step_ceiling";
     /** Set with `stopCause = "credit_exhausted"`: who refused, and what they said. */
     let creditStop: { provider: string; detail: string } | null = null;
+    /** Set with `stopCause = "context_budget"`: the saved continuation handoff. */
+    let continuationHandoff: string | undefined;
     /**
      * The duration ceiling fired inside a completion request (F15). The
      * next iteration is the finalization step whatever the clock says —
@@ -1906,6 +1922,36 @@ export class AgentLoop {
       } catch (err) {
         requestDeadline.dispose();
         runError = err instanceof Error ? err : new Error(String(err));
+        // A budget block is our own pre-flight refusal, not a provider or
+        // tool failure: the active task's protected context outgrew the
+        // conversation cap and no request was opened. Persist the
+        // continuation handoff on the session and end the turn here —
+        // mid-task and resumable, with nothing replayed or truncated.
+        if (err instanceof ContextBudgetExceededError) {
+          this.deps.logger?.warn(
+            "active task exceeds the conversation budget; ending the turn with a continuation handoff",
+            {
+              sessionId: state.id,
+              stepIndex: i,
+              requiredTokens: err.overBudget.requiredTokens,
+              budget: err.overBudget.budget,
+              protectedTurnCount: err.overBudget.protectedTurnCount,
+            },
+          );
+          state = {
+            ...state,
+            metadata: {
+              ...state.metadata,
+              continuationHandoff: err.handoff,
+              continuationHandoffAt: Date.now(),
+            },
+          };
+          continuationHandoff = err.handoff;
+          stopCause = "context_budget";
+          reason = "max_steps";
+          runError = null;
+          break;
+        }
         let category = classifyFailure(err);
         // The task's duration ceiling fired inside the request. It
         // surfaces as an abort — the same shape as Ctrl+C — but it is
@@ -2455,6 +2501,9 @@ export class AgentLoop {
         stepCeiling,
         elapsedMs: Date.now() - taskStartedAt,
         ...(creditStop !== null ? { credit: creditStop } : {}),
+        ...(continuationHandoff !== undefined
+          ? { handoff: continuationHandoff }
+          : {}),
       });
       state = recordTurn(state, assistantReplyTurn(synthetic));
       this.deps.onEvent?.({

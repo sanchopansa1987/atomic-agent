@@ -108,6 +108,8 @@ export interface BatchCallInput {
 }
 
 export interface BatchExecutionContext {
+  /** Optional project workflow refusal; never replaces the tool's own approval. */
+  workflowGuard?: (call: ToolCallPayload) => string | null;
   /** Hard per-turn exclusions, including tool discovery. */
   toolFilter?: (name: string) => boolean;
   workingDir: string;
@@ -442,6 +444,11 @@ export async function executeBatch(
     input: BatchCallInput,
   ): Promise<CompressedToolResult> => {
     try {
+      const refusal = ctx.workflowGuard?.(input.call);
+      if (refusal) return compressToolResult({
+        tool: input.call.tool, status: "error", output: refusal,
+        details: { projectWorkflowBlocked: true },
+      });
       return await registry.invoke(input.call.tool, input.call.args, {
         workingDir: ctx.workingDir,
         sessionId: ctx.sessionId,

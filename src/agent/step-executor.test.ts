@@ -672,6 +672,7 @@ describe("executeStep batch handling", () => {
         registry,
         slotManager: new SlotManager(2),
         async llmComplete(params) {
+          expect(params.requestKind).toBe("main");
           calls.push(params);
           return {
             content: "",

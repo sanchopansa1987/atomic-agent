@@ -1016,6 +1016,8 @@ describe("AgentLoop end-to-end with mock LLM", () => {
       createEmptySessionState({ id: "s-size-400", workingDir }),
       {
         userMessage: "keep going",
+        // Match the output allowance reported by the mock provider below.
+        maxOutputTokens: 2_000,
         maxSteps: 5,
         taskMaxSteps: 5,
         signal: new AbortController().signal,

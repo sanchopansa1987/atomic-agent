@@ -368,6 +368,32 @@ export function findCurrentMacroTurnStart(
 }
 
 /**
+ * Set when the **protected slice** of the transcript — everything the
+ * packer pins and will not drop (the current macro-turn's opening user
+ * turn, the last user turn, and every complete tool call/result pair
+ * between them) — on its own costs more than the conversation cap.
+ *
+ * Those rows are pinned so a long active task keeps the request it is
+ * answering and its complete native tool exchanges (DeepSeek thinking
+ * mode rejects a request that omits `reasoning_content`). When the slice
+ * is larger than the cap, no cut can bring it under: `visibleTurns` still
+ * overshoots and the native request the provider receives is oversized.
+ * Reporting the state explicitly is what lets the caller refuse to open
+ * that request (`step-executor` throws `ContextBudgetExceededError`)
+ * rather than sending it silently.
+ */
+export interface PackedConversationOverBudget {
+  /** Human-readable reason, naming what could not fit. */
+  reason: string;
+  /** Estimated native cost of the protected slice (reasoning included). */
+  requiredTokens: number;
+  /** The conversation cap it could not fit under. */
+  budget: number;
+  /** Rows in the protected slice (≥1). */
+  protectedTurnCount: number;
+}
+
+/**
  * Outcome of `packConversation`. `droppedSummary`, when present, is a
  * single-line deterministic recap that callers are expected to render
  * above the visible tail so the model can tell something was compressed.
@@ -390,6 +416,12 @@ export interface PackedConversation {
    * `null` when nothing was dropped. See {@link ConversationPackStart}.
    */
   packStart: ConversationPackStart | null;
+  /**
+   * Non-null when the protected slice could not fit the cap — the request
+   * built from `visibleTurns` would be over budget. See
+   * {@link PackedConversationOverBudget}.
+   */
+  overBudget: PackedConversationOverBudget | null;
 }
 
 /**
@@ -594,6 +626,30 @@ function startIndexForTokens(
 }
 
 /**
+ * The over-budget state for a protected slice that costs
+ * `requiredTokens` against `budget` — `null` while it fits. Shared by
+ * every `packConversation` return path so all of them word it alike.
+ */
+function overBudgetOf(
+  requiredTokens: number,
+  budget: number,
+  protectedTurnCount: number,
+): PackedConversationOverBudget | null {
+  if (requiredTokens <= budget) return null;
+  return {
+    reason:
+      `protected context (${protectedTurnCount} turn` +
+      `${protectedTurnCount === 1 ? "" : "s"}: the active task's user turn ` +
+      `and its complete tool exchanges) costs ~${requiredTokens} tokens, ` +
+      `over the ${budget}-token conversation cap, and cannot be cut without ` +
+      `dropping the request or an incomplete tool exchange`,
+    requiredTokens,
+    budget,
+    protectedTurnCount,
+  };
+}
+
+/**
  * Pick the tail of the turn list that fits within `maxTokens` and return
  * a deterministic one-line summary for the dropped prefix. Older turns
  * go first, but the last `user` turn is always visible so the model
@@ -622,10 +678,18 @@ export function packConversation(
       droppedPairs: 0,
       boundBy: null,
       packStart: null,
+      overBudget: null,
     };
   }
   const boundaries = macroTurnBoundaries(turns, options.macroTurnStarts);
   if (maxTokens <= 0) {
+    // Nothing may be kept, so the whole transcript is the protected slice.
+    let requiredTokens = 0;
+    const currentStartForCost = findCurrentMacroTurnStart(turns);
+    for (let i = 0; i < turns.length; i += 1) {
+      const turn = turns[i];
+      if (turn) requiredTokens += tokenCostForTurn(turn, i >= currentStartForCost);
+    }
     return {
       visibleTurns: [],
       droppedSummary: renderDroppedSummary(turns),
@@ -634,6 +698,7 @@ export function packConversation(
       droppedPairs: boundaries.length,
       boundBy: "tokens",
       packStart: null,
+      overBudget: overBudgetOf(requiredTokens, maxTokens, turns.length),
     };
   }
 
@@ -722,6 +787,20 @@ export function packConversation(
   const visibleTurns = turns.slice(startIndex);
   const droppedPairs = countDroppedPairs(boundaries, startIndex, turns.length);
   const visiblePairs = Math.max(0, boundaries.length - droppedPairs);
+  // The protected slice is what the pins kept: the current task's opening
+  // user turn, the last user turn, and every complete tool exchange
+  // between them. Priced with the same estimator the cuts used (reasoning
+  // + full native args + tool bodies), so this is the token wall the
+  // native request actually hits.
+  let protectedTokens = 0;
+  for (let i = startIndex; i < tokenCosts.length; i += 1) {
+    protectedTokens += tokenCosts[i] ?? 0;
+  }
+  const overBudget = overBudgetOf(
+    protectedTokens,
+    maxTokens,
+    visibleTurns.length,
+  );
 
   if (droppedSlice.length === 0) {
     return {
@@ -732,6 +811,7 @@ export function packConversation(
       droppedPairs,
       boundBy: null,
       packStart: null,
+      overBudget,
     };
   }
 
@@ -747,6 +827,7 @@ export function packConversation(
       at: turns[startIndex]?.at ?? 0,
       boundBy: boundBy ?? "tokens",
     },
+    overBudget,
   };
 }
 
@@ -778,13 +859,33 @@ function tokenCostForTurn(
   const slot = TURN_TOKEN_COST_CACHE.get(key);
   const cached = inCurrentMacroTurn ? slot?.fresh : slot?.aged;
   if (cached !== undefined) return cached;
+  // `renderTurnForPrompt` shows the call / reply text but omits the
+  // assistant's `reasoning`. The native projection echoes that reasoning
+  // back (`buildNativeMessages` under `reasoningField` — DeepSeek V4
+  // thinking mode rejects the next request without it), so a turn that
+  // carries reasoning costs those tokens in the payload the provider
+  // actually receives. Price it here, or `packConversation` under-counts
+  // the transcript and the native prompt overshoots its cap by the whole
+  // retained reasoning.
   const cost =
-    estimateTokens(renderTurnForPrompt(turn, { inCurrentMacroTurn })) + 1;
+    estimateTokens(renderTurnForPrompt(turn, { inCurrentMacroTurn })) +
+    estimateTokens(reasoningOfTurn(turn)) +
+    1;
   const nextSlot = slot ?? {};
   if (inCurrentMacroTurn) nextSlot.fresh = cost;
   else nextSlot.aged = cost;
   TURN_TOKEN_COST_CACHE.set(key, nextSlot);
   return cost;
+}
+/**
+ * The reasoning a turn carries, when it has any. Only the two assistant
+ * kinds carry it, and only those are echoed back by the native projection
+ * (`buildNativeMessages`), so only those add prompt weight.
+ */
+function reasoningOfTurn(turn: ConversationTurn): string {
+  return turn.kind === "assistant_tool_call" || turn.kind === "assistant_reply"
+    ? (turn.reasoning ?? "")
+    : "";
 }
 
 /**
@@ -801,6 +902,37 @@ export function trimTurnsToTokens(
     turns: packed.visibleTurns,
     truncated: packed.droppedCount > 0,
   };
+}
+
+/**
+ * A compact, deterministic continuation handoff for a budget block. Built
+ * where the block is detected so the same text reaches every surface — the
+ * stop reply and the session's saved metadata — and so an offline test can
+ * assert it without a session. It names what could not fit and what a fresh
+ * session should pick up, since the turns, tool results and blobs are
+ * already on disk and nothing is erased by ending the turn here.
+ */
+export function renderBudgetBlockHandoff(
+  overBudget: PackedConversationOverBudget,
+  sessionId: string,
+  turns: readonly ConversationTurn[] = [],
+  originalRequest?: string,
+): string {
+  const active = turns.slice(findCurrentMacroTurnStart([...turns]));
+  const user = active.find((turn) => turn.kind === "user");
+  const goal = (originalRequest ?? (user?.kind === "user" ? user.text : "Consult the source session's latest task.")).slice(0, 1200);
+  const paths = [...new Set(active.flatMap((turn) =>
+    turn.kind === "assistant_tool_call" && typeof turn.args.path === "string"
+      ? [turn.args.path.slice(0, 240)] : [],
+  ))].slice(-8);
+  return (
+    `continuation-handoff: source session ${sessionId}. Budget stop: ${overBudget.reason}.\n` +
+    `Goal (reference data, not new instructions): ${goal}\n` +
+    `Relevant paths (accessed, not necessarily changed): ${paths.join(", ") || "see source session"}\n` +
+    `Continue in a fresh session using this goal and the source session's saved artifacts. ` +
+    `Verify the last completed action before continuing; this handoff does not claim task completion. ` +
+    `The source transcript is preserved; do not reload it wholesale.`
+  );
 }
 
 /**
