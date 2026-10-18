@@ -17,7 +17,7 @@
  * the OS temp dir and removed.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -167,13 +167,23 @@ function attribute(
   if (project.failure !== null) {
     return { file, ok: null, checker: TS_CHECKER, error: project.failure };
   }
-  const own = project.diagnostics.get(absolute);
+  // `tsc --listFiles` prints realpath'd paths (`/private/var/…` on macOS)
+  // while the entry keeps the symlinked form (`/var/…`). Canonicalise the
+  // entry so the lookups below hit on either spelling.
+  let canonical = absolute;
+  try {
+    canonical = realpathSync(absolute);
+  } catch {
+    // Missing / unresolvable path — keep the original string.
+  }
+  const own =
+    project.diagnostics.get(canonical) ?? project.diagnostics.get(absolute);
   if (own !== undefined) {
     const shown = own.slice(0, 3).join("; ");
     const more = own.length > 3 ? ` (+${own.length - 3} more)` : "";
     return { file, ok: false, checker: TS_CHECKER, error: `${shown}${more}` };
   }
-  if (!project.included.has(absolute)) {
+  if (!project.included.has(canonical) && !project.included.has(absolute)) {
     return withoutVerdict(file, `not included by ${tsconfig}`);
   }
   if (project.errorCount > 0) {

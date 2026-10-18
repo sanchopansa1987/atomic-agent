@@ -18,7 +18,7 @@ describe("buildToolViewTool", () => {
     expect(tl.source).toBe("explicit");
   });
 
-  it("rejects a frequent (common) tool name", async () => {
+  it("can load a frequent tool deferred by a prompt-surface filter", async () => {
     const tool = buildToolViewTool();
     const ctx = {
       workingDir: "/w",
@@ -26,9 +26,8 @@ describe("buildToolViewTool", () => {
       stepIndex: 0,
       signal: new AbortController().signal,
     };
-    await expect(tool.run({ name: "browser.navigate" }, ctx)).rejects.toThrow(
-      /not in the # extras list/,
-    );
+    const result = await tool.run({ name: "browser.navigate" }, ctx);
+    expect(result.details.toolLoaded).toMatchObject({ name: "browser.navigate" });
   });
 });
 
@@ -53,14 +52,10 @@ describe("buildToolViewTool under a tool role", () => {
     expect(tl.source).toBe("explicit");
   });
 
-  it("still refuses a frequent tool the role already describes in full", async () => {
+  it("allows explicit loading of frequent in-role tools", async () => {
     const tool = buildToolViewTool();
-    await expect(
-      tool.run({ name: "os.fs.read" }, ctxFor("orchestrator")),
-    ).rejects.toThrow(/already in the stable prefix/);
-    await expect(
-      tool.run({ name: "os.fs.write" }, ctxFor("full")),
-    ).rejects.toThrow(/already in the stable prefix/);
+    expect((await tool.run({ name: "os.fs.read" }, ctxFor("orchestrator"))).status).toBe("ok");
+    expect((await tool.run({ name: "os.fs.write" }, ctxFor("full"))).status).toBe("ok");
   });
 
   it("keeps loading rare tools whatever the role, and says when the role is why", async () => {

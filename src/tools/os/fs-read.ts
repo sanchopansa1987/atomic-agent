@@ -1,3 +1,6 @@
+import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
+import { createInterface } from "node:readline";
 import { open, realpath, stat } from "node:fs/promises";
 import { compressToolResult } from "../../compressor/result-compressor.js";
 import { resolveUserPath } from "./expand-home.js";
@@ -9,7 +12,17 @@ import {
 } from "./fs-read-coverage.js";
 import type { ToolDefinition } from "../tool-registry.js";
 
-const DEFAULT_MAX_BYTES = 64 * 1024;
+const DEFAULT_MAX_BYTES = 8 * 1024;
+
+/**
+ * No line-level cap. The byte cap above is this tool's only limit, and it
+ * is the one the description advertises ("increase `maxBytes` to reach
+ * deeper into a large file"). A lower `maxTailLines` would silently drop
+ * the START of a long read, leaving `… [omitted N lines]` with no hint on
+ * how to reach those lines — the renderer's own cap already appends an
+ * exact `offset`/`limit` paging hint instead.
+ */
+const READ_MAX_LINES = Number.MAX_SAFE_INTEGER;
 
 interface ReadArgs {
   path: string;
@@ -46,10 +59,12 @@ export const osFsReadTool: ToolDefinition = {
     "Read a UTF-8 text file. Paths may be relative to the session working " +
     "directory. `offset` and `limit` select LINE numbers (1-based; negative " +
     "offset counts from the end), but only among the lines present in the " +
-    "first `maxBytes` bytes of the file (default 64KB, up to the file size). " +
+    "first `maxBytes` bytes of the file (default 8KB, up to the file size). " +
     "An `offset` past that readable-prefix raises an error naming the " +
     "readable line count — increase `maxBytes` to reach deeper into a large " +
-    "file, or omit `offset` to read from the top. `lineNumbers: true` " +
+    "file. Without an explicit maxBytes, nonnegative line ranges in large files " +
+    "stream from the requested offset (default 200 lines, at most 8KB of text). " +
+    "Use the returned nextOffset to continue. `lineNumbers: true` " +
     "prefixes each returned line with `N|`.",
   readonly: true,
   async run(rawArgs, ctx) {
@@ -62,6 +77,10 @@ export const osFsReadTool: ToolDefinition = {
     const canonical = await canonicalize(absolute);
 
     if (args.offset !== undefined || args.limit !== undefined) {
+      if (rawArgs.maxBytes === undefined && info.size > DEFAULT_MAX_BYTES &&
+          (args.offset ?? 1) >= 0) {
+        return readLargeLineRange(absolute, canonical, info.size, args);
+      }
       return readByLines(absolute, canonical, info.size, args);
     }
     return readByBytes(absolute, canonical, info.size, args);
@@ -129,7 +148,7 @@ async function readByBytes(
           }),
         },
       },
-      { maxSummaryLength: args.maxBytes, maxTailLines: 500 },
+      { maxSummaryLength: text.length + 1, maxTailLines: READ_MAX_LINES, preserveWhitespace: true },
     );
   } finally {
     await handle.close();
@@ -223,8 +242,71 @@ async function readByLines(
         }),
       },
     },
-    { maxSummaryLength: args.maxBytes, maxTailLines: 500 },
+    { maxSummaryLength: body.length + 1, maxTailLines: READ_MAX_LINES, preserveWhitespace: true },
   );
+}
+
+/** Scan without retaining the prefix; the byte budget applies to returned text. */
+async function readLargeLineRange(
+  absolute: string,
+  canonical: string,
+  size: number,
+  args: ReadArgs,
+): Promise<ReturnType<typeof compressToolResult>> {
+  const first = Math.max(1, args.offset ?? 1);
+  const limit = args.limit ?? 200;
+  const stream = createReadStream(absolute);
+  const hash = createHash("sha1");
+  stream.on("data", (chunk) => hash.update(chunk));
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  const selected: string[] = [];
+  let total = 0;
+  let bytes = 0;
+  let capped = false;
+  try {
+    for await (const line of lines) {
+      total++;
+      if (total < first || selected.length >= limit || capped) continue;
+      const rendered = args.lineNumbers ? formatNumberedLine(total, line) : line;
+      const length = Buffer.byteLength(rendered) + (selected.length ? 1 : 0);
+      if (bytes + length > args.maxBytes) {
+        if (selected.length === 0) {
+          throw new Error("os.fs.read: requested line exceeds 8KB; use an explicit maxBytes large enough for its file prefix");
+        }
+        capped = true;
+        continue;
+      }
+      selected.push(rendered);
+      bytes += length;
+    }
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+  if (total > 0 && first > total) {
+    throw new Error(`os.fs.read: offset ${first} is past the end of ${absolute} (${total} lines)`);
+  }
+  const end = selected.length ? first + selected.length - 1 : 0;
+  const more = selected.length ? end < total : first <= total;
+  const body = selected.join("\n");
+  const output = capped || (args.limit === undefined && more)
+    ? body + `\n[Read bounded; continue with offset: ${first + selected.length}, limit: 200]`
+    : body;
+  const result = compressToolResult({
+    tool: "os.fs.read", status: "ok", output,
+    details: {
+      path: absolute, size, bytesRead: stream.bytesRead,
+      truncated: more, totalLines: total,
+      startLine: selected.length ? first : 0, endLine: end,
+      returnedLines: selected.length, ...(more ? { nextOffset: first + selected.length } : {}),
+      [READ_COVERAGE_DETAIL_KEY]: {
+        path: canonical, contentHash: hash.digest("hex").slice(0, 16),
+        numbered: args.lineNumbers, startLine: selected.length ? first : 0,
+        endLine: end, totalLines: total, truncated: false,
+      },
+    },
+  }, { maxSummaryLength: output.length + 1, maxTailLines: READ_MAX_LINES, preserveWhitespace: true });
+  return result;
 }
 
 /** Assemble the read-coverage detail for one successful read. */

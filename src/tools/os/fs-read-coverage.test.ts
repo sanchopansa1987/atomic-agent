@@ -48,6 +48,37 @@ describe("os.fs.read coverage detail", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it("preserves indentation, blank lines and trailing whitespace", async () => {
+    const text = "  def example():\n\n      return 1  \n";
+    await writeFile(join(dir, "source.py"), text);
+    expect((await osFsReadTool.run({ path: "source.py" }, makeCtx(dir))).summary).toBe(text);
+    const ranged = await osFsReadTool.run({ path: "source.py", offset: 1, limit: 3 }, makeCtx(dir));
+    expect(ranged.summary).toBe(text.slice(0, -1));
+  });
+
+  it("reaches late line ranges without loading the prefix into the response", async () => {
+    const body = Array.from({ length: 2000 }, (_, i) => "  line " + (i + 1)).join("\n");
+    await writeFile(join(dir, "large.ts"), body);
+    const result = await osFsReadTool.run({ path: "large.ts", offset: 1800, limit: 2 }, makeCtx(dir));
+    expect(result.summary).toBe("  line 1800\n  line 1801");
+    expect(result.details.startLine).toBe(1800);
+    expect(result.details.endLine).toBe(1801);
+    expect(result.details.totalLines).toBe(2000);
+    expect(result.details.nextOffset).toBe(1802);
+  });
+
+  it("bounds a default large line read and leaves explicit full reads available", async () => {
+    const body = Array.from({ length: 2000 }, (_, i) => "  line " + (i + 1)).join("\n");
+    await writeFile(join(dir, "large.ts"), body);
+    const result = await osFsReadTool.run({ path: "large.ts", offset: 1 }, makeCtx(dir));
+    expect(result.details.returnedLines).toBe(200);
+    expect(result.summary).toContain("offset: 201");
+    const full = await osFsReadTool.run({ path: "large.ts", maxBytes: Buffer.byteLength(body) }, makeCtx(dir));
+    expect(full.summary).toBe(body);
+    const bytes = await osFsReadTool.run({ path: "large.ts" }, makeCtx(dir));
+    expect(bytes.details.bytesRead).toBe(8192);
+  });
+
   it("reports the whole prefix as the returned range in byte mode", async () => {
     await writeFile(join(dir, "a.txt"), "one\ntwo\nthree\n", "utf8");
     const coverage = await readCoverageOf(dir, { path: "a.txt" });

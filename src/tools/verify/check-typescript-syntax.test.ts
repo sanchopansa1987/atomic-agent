@@ -11,8 +11,13 @@ import {
   TS_CHECKER,
 } from "./check-typescript-syntax.js";
 
-/** This repository's own tsc, resolved through the `.bin` symlink. */
-const REAL_TSC = realpathSync(resolve(process.cwd(), "node_modules/.bin/tsc"));
+/** This repository's own tsc, resolved to the real `bin/tsc` JS file
+ *  rather than the `.bin/tsc` shell shim — the shim derives its `basedir`
+ *  from `$0`, so symlinking it into the temp project breaks its
+ *  `../typescript/bin/tsc` lookup. */
+const REAL_TSC = realpathSync(
+  resolve(process.cwd(), "node_modules/typescript/bin/tsc"),
+);
 
 let dir: string;
 

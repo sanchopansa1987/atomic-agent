@@ -51,17 +51,8 @@ export function buildToolViewTool(): ToolDefinition {
       }
       const role = ctx.toolRole ?? "full";
       const outsideRole = !roleAdmits(role, d.name);
-      // Runtime (MCP) tools always come back from the descriptor
-      // builder at `tier: "frequent"`, so the rare/extras check would
-      // refuse them even when they legitimately sit on the extras
-      // line.  For those, only the role check matters — if the role
-      // doesn't admit it, it's on the extras line and loadable.
-      const isRuntimeTool = builtinDescriptor === undefined;
-      if (!isRuntimeTool && d.tier !== "rare" && !outsideRole) {
-        throw new Error(
-          `tool.view: "${name}" is not in the # extras list (full schema is already in the stable prefix)`,
-        );
-      }
+      // A prompt-surface filter can defer even a frequent in-role tool.
+      // Explicit loading is safe: hard exclusions were checked above.
       return compressToolResult(
         {
           tool: "tool.view",
