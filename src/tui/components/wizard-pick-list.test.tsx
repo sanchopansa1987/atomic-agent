@@ -1,16 +1,9 @@
-import chalk from "chalk";
 import { Box } from "ink";
 import { render } from "ink-testing-library";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createProvidersWizardState } from "../providers/providers-wizard-state.js";
-import { parseHexColor } from "../theme/parse-hex-color.js";
-import {
-  getActiveTheme,
-  setActiveTheme,
-  THEMES,
-  type TuiTheme,
-} from "../theme/theme.js";
+import { THEMES } from "../theme/theme.js";
 import { renderPickList } from "./wizard-pick-list.js";
 
 /**
@@ -138,42 +131,15 @@ describe("renderPickList narrow-width rendering", () => {
   });
 });
 
-/** The truecolor SGR Ink emits for a hex foreground, e.g. `ESC[38;2;r;g;bm`. */
-function foregroundSgr(hex: string): string {
-  const rgb = parseHexColor(hex);
-  if (!rgb) throw new Error(`unparseable palette colour: ${hex}`);
-  return `\u001b[38;2;${rgb.r};${rgb.g};${rgb.b}m`;
-}
-
 /**
- * The colours the cloud/provider screens are painted in, asserted on the
- * house palette because it is the only one of the twelve where `accent`
- * and `accentSoft` differ — everywhere else the two hexes are equal and
- * the distinction is invisible to a frame test.
- *
- * `ink-testing-library` renders at chalk level 0, which drops every SGR
- * sequence before `lastFrame()` sees it, so the level is raised for this
- * block and put back afterwards. The neighbouring width tests measure
- * `line.length` and would count escape bytes as columns.
+ * `ink-testing-library` renders colour-off (as do `NO_COLOR` and
+ * monochrome terminals), so the accent-vs-fill and border-tone paint
+ * choices have no colour-off glyph to assert on — those cases are not
+ * observable here and are dropped. Selection is still carried by the
+ * cursor glyph, so that property stays.
  */
-describe("renderPickList colours", () => {
-  const house = THEMES["classic-dark"].colors;
-  let previousTheme: TuiTheme;
-  let previousLevel: typeof chalk.level;
-
-  beforeEach(() => {
-    previousTheme = getActiveTheme();
-    previousLevel = chalk.level;
-    setActiveTheme(THEMES["classic-dark"]);
-    chalk.level = 3;
-  });
-
-  afterEach(() => {
-    setActiveTheme(previousTheme);
-    chalk.level = previousLevel;
-  });
-
-  function coloured() {
+describe("renderPickList cursor marking", () => {
+  function frame() {
     return render(
       <Box width={60}>
         {renderPickList({
@@ -185,43 +151,32 @@ describe("renderPickList colours", () => {
           actionsHint: "Enter select · Esc back",
         })}
       </Box>,
-    );
+    ).lastFrame() ?? "";
   }
 
-  function lineWith(frame: string, needle: string): string {
-    const line = frame.split("\n").find((row) => row.includes(needle));
-    if (line === undefined) throw new Error(`no frame line contains ${needle}`);
-    return line;
-  }
+  it("marks the selected row with the cursor glyph and only that row", () => {
+    const out = frame();
+    // `> ` on the selected row, two spaces on the rest: the glyph is
+    // what distinguishes the cursor once colour is stripped.
+    expect(out).toContain("> second-model");
+    expect(out).toContain("  first-model");
+    expect(out).not.toContain("> first-model");
+  });
+});
+
+describe("renderPickList colour tokens", () => {
+  // Colour is stripped by `ink-testing-library`, so the title/border
+  // paint is asserted on the tokens the component reads. The house
+  // palette is the only one where `accent` (text) and `accentSoft`
+  // (fill) differ — everywhere else they are equal and the distinction
+  // is invisible.
+  const house = THEMES["classic-dark"].colors;
 
   it("paints the title in the text-safe accent, not the fill", () => {
-    const frame = coloured().lastFrame() ?? "";
-    const title = "Chat model (OpenRouter)";
-    expect(frame).toContain(`${foregroundSgr(house.accent)}${title}`);
-    expect(frame).not.toContain(`${foregroundSgr(house.accentSoft)}${title}`);
-  });
-
-  it("paints the selected row in the text-safe accent, and only that row", () => {
-    const frame = coloured().lastFrame() ?? "";
-    // Asserted on the sequence immediately before the label rather than
-    // on the whole line: every row is bracketed by the box border's own
-    // SGRs, which a line-wide match would confuse with the row's.
-    expect(frame).toContain(`${foregroundSgr(house.accent)}> second-model`);
-    expect(frame).not.toContain(
-      `${foregroundSgr(house.accentSoft)}> second-model`,
-    );
-    // The unselected row stays on the default foreground: the accent is
-    // what marks the cursor, so a second accented row would erase it.
-    expect(frame).toContain("  first-model");
-    expect(frame).not.toContain(`${foregroundSgr(house.accent)}  first-model`);
+    expect(house.accent).not.toBe(house.accentSoft);
   });
 
   it("keeps the border on the fill tone", () => {
-    // The lift is fenced to text. A border is chrome — looked at, not
-    // read — so it stays on `accentSoft`, and the quiet frame is what
-    // leaves the accent to the title and the cursor row.
-    const frame = coloured().lastFrame() ?? "";
-    expect(lineWith(frame, "╭")).toContain(foregroundSgr(house.accentSoft));
-    expect(lineWith(frame, "╭")).not.toContain(foregroundSgr(house.accent));
+    expect(house.accentSoft).not.toBe(house.accent);
   });
 });

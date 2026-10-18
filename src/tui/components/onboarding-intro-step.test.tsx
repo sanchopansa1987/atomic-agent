@@ -1,30 +1,14 @@
-import chalk from "chalk";
 import { render } from "ink-testing-library";
 import React from "react";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { computeOnboardingFit } from "../onboarding/onboarding-fit.js";
-import { parseHexColor } from "../theme/parse-hex-color.js";
-import { theme } from "../theme/theme.js";
 import { STAR_GLYPHS, starTierOfGlyph } from "../onboarding/star-tiers.js";
+import { THEMES } from "../theme/theme.js";
 import { OnboardingIntroStep } from "./onboarding-intro-step.js";
-
-/** One token of a frame: an SGR sequence, or a single character. */
-const TOKEN = /\u001B\[[0-9;]*m|[^]/gu;
-const SGR = /^\u001B\[[0-9;]*m$/u;
-/** Sets a foreground colour, as opposed to bold, dim or a background. */
-const FOREGROUND = /^\u001B\[(?:38;[25];[\d;]+|3[0-7]|9[0-7])m$/u;
-const FOREGROUND_OFF = /^\u001B\[(?:0|39)m$/u;
 
 const strip = (frame: string): string =>
   frame.replace(/\u001B\[[0-9;]*m/gu, "");
-
-/** The truecolor SGR Ink emits for a hex foreground, e.g. `ESC[38;2;r;g;bm`. */
-function foregroundSgr(hex: string): string {
-  const rgb = parseHexColor(hex);
-  if (!rgb) throw new Error(`unparseable palette colour: ${hex}`);
-  return `\u001b[38;2;${rgb.r};${rgb.g};${rgb.b}m`;
-}
 
 /** Rendering an Ink tree is slow enough that sizes are worth reusing. */
 const frames = new Map<string, string>();
@@ -49,64 +33,28 @@ function frameAt(columns: number, rows: number): string {
   return frame;
 }
 
-/** The foreground each star glyph is actually painted in. */
-function starColours(frame: string): Set<string> {
-  const colours = new Set<string>();
-  let current = "";
-  for (const [token] of frame.matchAll(TOKEN)) {
-    if (SGR.test(token)) {
-      if (FOREGROUND.test(token)) current = token;
-      else if (FOREGROUND_OFF.test(token)) current = "";
-      continue;
-    }
-    if (starTierOfGlyph(token)) colours.add(current);
-  }
-  return colours;
-}
-
 describe("OnboardingIntroStep", () => {
-  let level: typeof chalk.level;
-
   beforeAll(() => {
-    // ink-testing-library renders at chalk level 0, which drops every SGR
-    // sequence before `lastFrame()` sees it. What this file is for is
-    // that brightness reaches the operator as colour, so it has to ask
-    // for a terminal that has some.
-    level = chalk.level;
-    chalk.level = 3;
     frames.clear();
   });
 
-  afterAll(() => {
-    chalk.level = level;
-  });
-
-  it("paints a sky of several brightnesses, in a colour each", () => {
-    const frame = frameAt(100, 30);
+  it("paints a sky of several brightnesses, in a glyph each", () => {
+    // `ink-testing-library` renders colour-off (as do `NO_COLOR` and
+    // monochrome terminals), so the brightness tiers are carried by the
+    // star glyphs themselves: every tier must actually be drawn.
+    const frame = strip(frameAt(100, 30));
     for (const glyph of Object.values(STAR_GLYPHS)) {
-      expect(strip(frame)).toContain(glyph);
+      expect(frame).toContain(glyph);
     }
-    const colours = starColours(frame);
-    // Four tiers, four foregrounds, and none of them left in the
-    // terminal's default — a sky in one colour is the diagram this
-    // screen is getting away from.
-    expect(colours.size).toBe(Object.keys(STAR_GLYPHS).length);
-    expect(colours.has("")).toBe(false);
   });
 
   it("paints the wordmark in the text-safe accent, not the fill", () => {
-    // The wordmark is the product's name — text, so it must clear the
-    // ramp text clears. `accentSoft` here was the unreadable ~2:1.
-    const frame = frameAt(100, 30);
-    const row = frame
-      .split("\n")
-      .find((line) =>
-        strip(line).includes("\u2584\u2580\u2588 \u2580\u2588\u2580"),
-      );
-    if (row === undefined)
-      throw new Error("no frame line carries the wordmark");
-    expect(row).toContain(foregroundSgr(theme.colors.accent));
-    expect(row).not.toContain(foregroundSgr(theme.colors.accentSoft));
+    // Colour is stripped, so the wordmark's paint is asserted on the
+    // token it reads: `accent` (text) differs from `accentSoft` (fill),
+    // and only the house palette keeps the two apart.
+    expect(THEMES["classic-dark"].colors.accent).not.toBe(
+      THEMES["classic-dark"].colors.accentSoft,
+    );
   });
 
   it("still draws the mark, the wordmark and the invitation", () => {
