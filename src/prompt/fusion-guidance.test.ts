@@ -138,11 +138,15 @@ describe("the ### fusion prefix section", () => {
     // fan-out overflowed its server; ~100 tokens is what that costs.
     // F43's restore line was paid for by shortening the others — the
     // budget is the budget.
+    // Restored 2200 → 1400 and 2700 → 1850 on 2026-10-16: the self-model
+    // block moved out of FUSION_GUIDANCE into stable-prefix.ts (SELF_MODEL)
+    // so it renders in every run mode, not only fusion. This block is
+    // fusion-specific again.
     expect(FUSION_GUIDANCE.length).toBeLessThan(1400);
-    expect(buildFusionGuidance(FACTS).length).toBeLessThan(1900);
+    expect(buildFusionGuidance(FACTS).length).toBeLessThan(1800);
     expect(
       buildFusionGuidance({ ...FACTS, tokensPerSecond: 6.4 }).length,
-    ).toBeLessThan(1900);
+    ).toBeLessThan(1850);
   });
 });
 

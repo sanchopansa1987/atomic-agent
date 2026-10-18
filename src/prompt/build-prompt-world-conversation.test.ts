@@ -129,3 +129,29 @@ describe("packedConversationTurns", () => {
     ]);
   });
 });
+
+
+describe("active read deduplication", () => {
+  it("keeps one retained body per path, range and content in both wire forms", () => {
+    const args = { path: "a.ts", offset: 1, limit: 2 };
+    const turns = [
+      userTurn("edit", 1), readCall(args, 2), readResult(3, "UNIQUE_BODY"),
+      readCall(args, 4), readResult(5, "UNIQUE_BODY"),
+      readCall({ ...args, path: "b.ts" }, 6), readResult(7, "UNIQUE_BODY"),
+      readCall({ ...args, offset: 3 }, 8), readResult(9, "UNIQUE_BODY"),
+      readCall(args, 10), readResult(11, "CHANGED_BODY"),
+    ];
+    const saved = JSON.stringify(turns);
+    const packed = { visibleTurns: turns, droppedSummary: null };
+    const bodies = packedConversationTurns(packed).filter((t) => t.kind === "tool_result");
+    expect(bodies[0]!.body).toBe("UNIQUE_BODY");
+    expect(bodies[1]!.body).not.toContain("UNIQUE_BODY");
+    expect(bodies[2]!.body).toBe("UNIQUE_BODY");
+    expect(bodies[3]!.body).toBe("UNIQUE_BODY");
+    expect(bodies[4]!.body).toBe("CHANGED_BODY");
+    expect(renderPackedConversation(packed)).toContain(bodies[1]!.body);
+    expect(JSON.stringify(turns)).toBe(saved);
+    const afterDrop = packedConversationTurns({ visibleTurns: turns.slice(3, 5), droppedSummary: "older" });
+    expect(afterDrop[1]!.kind === "tool_result" && afterDrop[1]!.body).toBe("UNIQUE_BODY");
+  });
+});

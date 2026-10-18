@@ -6,7 +6,10 @@ import type {
 import type { ThinkingSetting } from "../llm/server-template-policy.js";
 import type { ProfileFact } from "../memory/profile-store.js";
 import type { ProfileClipStats } from "./clip-profile-section.js";
-import type { ConversationPackStart } from "../session/conversation-turn.js";
+import type {
+  ConversationPackStart,
+  PackedConversationOverBudget,
+} from "../session/conversation-turn.js";
 import type { SessionState } from "../session/session-state.js";
 import type {
   CapabilitiesSummary,
@@ -211,6 +214,15 @@ export interface BuiltPrompt {
    * `null` when nothing was dropped.
    */
   conversationPackStart: ConversationPackStart | null;
+  /**
+   * Set when the protected slice of the transcript (the current task's
+   * user turn and its complete tool exchanges) costs more than the
+   * effective conversation cap — the packer's pins keep it, so the request
+   * built from this prompt would be over budget. The runtime must not open
+   * that request; `step-executor` throws `ContextBudgetExceededError`.
+   * `null` whenever the prompt fits.
+   */
+  conversationOverBudget: PackedConversationOverBudget | null;
   /**
    * Token cost of each macro-turn, oldest first.
    *

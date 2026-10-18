@@ -59,6 +59,7 @@ export function packedConversationTurns(packed: PackedTurns): PromptTurn[] {
           kind: "assistant_tool_call",
           tool: turn.tool,
           args: turn.args,
+          ...(turn.reasoning ? { reasoning: turn.reasoning } : {}),
         });
         break;
       case "tool_result":
@@ -77,6 +78,7 @@ export function packedConversationTurns(packed: PackedTurns): PromptTurn[] {
             turn.attachments !== undefined && turn.attachments.length > 0
               ? `${turn.text} (attached: ${turn.attachments.join(", ")})`
               : turn.text,
+          ...(turn.reasoning ? { reasoning: turn.reasoning } : {}),
         });
         break;
     }
@@ -104,26 +106,33 @@ function* packedTurnRenderOptions(
   // call order (a batch may list several calls before their results), so a
   // read cut at render time can name the `offset` of the rest.
   let pendingReadStarts: (number | undefined)[] = [];
+  let pendingReadKeys: string[] = [];
   // Dedup: content-hash -> index of first turn in this prompt that carried
   // that result. A repeat (same tool + status + identical summary) renders
   // as a marker pointing at the earlier turn instead of the full body.
-  // Only applies outside the current macro-turn; a result the model is
-  // actively working with stays whole.
+  // Active reads also deduplicate, but only with identical arguments and
+  // content, against an original still retained in the same active slice.
   const seenToolResults = new Map<string, number>();
   for (let i = 0; i < packed.visibleTurns.length; i += 1) {
     const turn = packed.visibleTurns[i]!;
     const inCurrentMacroTurn = i >= currentStart;
     const options: RenderTurnOptions = { inCurrentMacroTurn };
+    let readKey: string | undefined;
     if (turn.kind === "user" || turn.kind === "assistant_reply") {
       pendingReadStarts = [];
+      pendingReadKeys = [];
     } else if (turn.kind === "assistant_tool_call" && turn.tool === "os.fs.read") {
       pendingReadStarts.push(readStartLineOf(turn.args));
+      pendingReadKeys.push(JSON.stringify(turn.args));
     } else if (turn.kind === "tool_result" && turn.tool === "os.fs.read") {
       const readStartLine = pendingReadStarts.shift();
+      readKey = pendingReadKeys.shift();
       if (readStartLine !== undefined) options.readStartLine = readStartLine;
     }
-    if (turn.kind === "tool_result" && !inCurrentMacroTurn) {
+    if (turn.kind === "tool_result" && (!inCurrentMacroTurn ||
+      (turn.tool === "os.fs.read" && turn.status === "ok" && readKey !== undefined))) {
       const hash = createHash("sha256");
+      hash.update(inCurrentMacroTurn ? "active:" + readKey : "history");
       hash.update(turn.tool);
       hash.update("\u0000");
       hash.update(turn.status);

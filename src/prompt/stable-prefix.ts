@@ -203,6 +203,27 @@ export const NATIVE_TOOLS_SYSTEM_PERSONA = [
 ].join("\n");
 
 /**
+ * The orchestrator's own identity and capability facts. Rendered in every
+ * run mode (not gated by fusion), right after the persona, so the model
+ * always knows what it is, its model/context cap, where memory lives, and
+ * when to route to DSH. The full tool list and session-start ritual stay in
+ * docs/AGENT_SELF.md for the file-read path.
+ */
+const SELF_MODEL = `### self-model
+
+Role: primary orchestrator. You were the user's web DeepSeek chat, now replaced by this session.
+
+Model: deepseek-flash, 160k context cap. Config: ~/.atomic-agent/config.json (read-only; do not edit).
+
+Memory: TencentDB gateway on 127.0.0.1:8420, integrated via step-executor prompt injection. Keyword recall works; semantic recall is sparse.
+
+Handoff: docs/HANDOFF_2026-10-16.md. Self-model file: docs/AGENT_SELF.md (read this for full tool list, DSH delegation, session start ritual).
+
+DSH: separate DeepSeek Pro app. Route tasks spanning 5+ files with subtle reasoning. Write prompt to docs/dsh_prompts/, ask user to paste it.
+
+Session start: read AGENT_SELF.md + HANDOFF, verify memory, reply "Orchestrator active. Handoff loaded. Memory: [ok|degraded]. Ready."`;
+
+/**
  * `### rules` body shared verbatim between the transports. Only the
  * emission-shape opener differs: grammar mandates the length-1 text
  * array, native mandates the function-calling interface — leaving the
@@ -304,6 +325,8 @@ export function buildStablePrefix(input: StablePrefixInput): string {
   return [
     ...head,
     persona,
+    ``,
+    SELF_MODEL,
     ...(input.capabilities.platform === "win32"
       ? [``, WINDOWS_PLATFORM_HINT]
       : []),

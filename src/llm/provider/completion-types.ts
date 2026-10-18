@@ -37,8 +37,13 @@ export interface CompletionUsage {
  */
 export type PromptTurn =
   | { kind: "user"; text: string }
-  | { kind: "assistant_reply"; text: string }
-  | { kind: "assistant_tool_call"; tool: string; args: Record<string, unknown> }
+  | { kind: "assistant_reply"; text: string; reasoning?: string }
+  | {
+      kind: "assistant_tool_call";
+      tool: string;
+      args: Record<string, unknown>;
+      reasoning?: string;
+    }
   | {
       kind: "tool_result";
       tool: string;
@@ -119,6 +124,8 @@ export interface CompletionRequest {
   repeatPenalty?: number;
   repeatLastN?: number;
   sessionId?: string;
+  /** Explicit call origin; unmarked calls bypass external conversation memory. */
+  requestKind?: "main" | "auxiliary";
   signal?: AbortSignal;
   imageData?: ReadonlyArray<{ id: number; data: string }>;
   /** OpenAI tools path — ignored by grammar-only providers. */

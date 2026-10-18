@@ -529,6 +529,7 @@ export function buildPrompt(input: BuildPromptInput): BuiltPrompt {
     conversationPairsCap: conversationMaxPairs,
     conversationBoundBy: packed.boundBy,
     conversationPackStart: packed.packStart,
+    conversationOverBudget: packed.overBudget,
     pairCosts: pairTokenCosts(
       input.session.turns,
       input.session.macroTurnStarts,

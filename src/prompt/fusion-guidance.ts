@@ -75,6 +75,8 @@ export const FUSION_GUIDANCE = [
   "A task that replaced a pre-existing file is not done until the file is restored (`os.fs.restore` in a worker) or the replacement was asked for.",
   "Yours alone: the decision you were asked for, a part that only makes sense with this conversation in front of it, anything needing approval.",
   "Call `fusion.delegate` on its own, never alongside other tool calls.",
+  // Self-model now lives in stable-prefix.ts (`SELF_MODEL`) so it renders in
+  // every run mode, not only fusion. This block stays fusion-specific.
 ].join("\n");
 
 /**
