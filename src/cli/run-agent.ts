@@ -121,10 +121,11 @@ interface CliApprovalAnswer {
  */
 async function promptApproval(
   request: ApprovalRequest,
+  sharedInput?: ReadlineInterface,
 ): Promise<CliApprovalAnswer> {
   const grantCategory = canGrantCategory(request);
   const grantShape = canGrantShape(request);
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const rl = sharedInput ?? createInterface({ input: process.stdin, output: process.stderr });
   try {
     const lines = [
       "",
@@ -164,7 +165,7 @@ async function promptApproval(
     }
     return { approved: /^(y|yes)$/.test(answer) };
   } finally {
-    rl.close();
+    if (!sharedInput) rl.close();
   }
 }
 
@@ -242,6 +243,7 @@ export function formatAgentEvent(
 }
 
 interface ChatLoopOptions {
+  input: ReadlineInterface;
   runtime: AgentRuntime;
   initialSession: SessionState;
   /**
@@ -331,11 +333,9 @@ async function runChatLoop(opts: ChatLoopOptions): Promise<SessionState> {
     }
   };
 
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stderr,
-    terminal: process.stdin.isTTY === true,
-  });
+  const rl = opts.input;
+  const onAbort = () => rl.close();
+  opts.controller.signal.addEventListener("abort", onAbort, { once: true });
 
   const ask = (rli: ReadlineInterface): Promise<string | null> =>
     new Promise((resolvePrompt, rejectPrompt) => {
@@ -379,6 +379,7 @@ async function runChatLoop(opts: ChatLoopOptions): Promise<SessionState> {
       await driveTurn(trimmed);
     }
   } finally {
+    opts.controller.signal.removeEventListener("abort", onAbort);
     rl.close();
   }
   return session;
@@ -406,6 +407,7 @@ export async function runAgentCommand(args: string[]): Promise<number> {
   );
 
   let approvalChain: Promise<unknown> = Promise.resolve();
+  let chatInput: ReadlineInterface | undefined;
 
   // The hint only applies when a transport failure means "local llama is
   // down" — i.e. the active text route IS the local server. On a cloud
@@ -431,7 +433,7 @@ export async function runAgentCommand(args: string[]): Promise<number> {
       },
       onApprovalRequest: (request) => {
         approvalChain = approvalChain.then(async () => {
-          const answer = await promptApproval(request);
+          const answer = await promptApproval(request, chatInput);
           runtime.approvals.resolve({
             approvalId: request.approvalId,
             approved: answer.approved,
@@ -468,8 +470,16 @@ export async function runAgentCommand(args: string[]): Promise<number> {
 
   let exitCode = 0;
   try {
+    // Approval questions share the chat reader. Closing a second reader
+    // paused stdin and disabled raw mode, leaving the next chat prompt hung.
+    chatInput = createInterface({
+      input: process.stdin,
+      output: process.stderr,
+      terminal: process.stdin.isTTY === true,
+    });
     const session = runtime.createSession();
     const finalSession = await runChatLoop({
+      input: chatInput,
       runtime,
       initialSession: session,
       // Only `--max-steps` becomes a ceiling. Filling in `agent.maxSteps`
@@ -505,6 +515,7 @@ export async function runAgentCommand(args: string[]): Promise<number> {
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    chatInput?.close();
     await runtime.shutdown();
   }
   return exitCode;

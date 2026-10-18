@@ -8,6 +8,7 @@ import { normaliseCommand } from "./normalise.js";
 import { hardlineRule } from "./rules-hardline.js";
 import { buildGitRemotePolicyRule } from "./rules-policy.js";
 import { dangerousRule } from "./rules-dangerous.js";
+import { guardBootstrapRule } from "./rules-trusted/guard-bootstrap.js";
 import { gogReadOnlyRule } from "./rules-trusted/gog.js";
 import { ghReadOnlyRule } from "./rules-trusted/gh.js";
 import { icalBuddyReadOnlyRule } from "./rules-trusted/ical-buddy.js";
@@ -16,6 +17,7 @@ import { safeAllowRule } from "./rules-safe-allow.js";
 /** Everything after the hardline layer, in evaluation order. */
 const RULES_AFTER_HARDLINE: readonly Rule[] = [
   dangerousRule,
+  guardBootstrapRule,
   gogReadOnlyRule,
   ghReadOnlyRule,
   icalBuddyReadOnlyRule,

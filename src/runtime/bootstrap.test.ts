@@ -122,6 +122,56 @@ describe("createAgentRuntime", () => {
     resetConfigCache();
   });
 
+  it("explicit-only memory disables auxiliary calls and unverified profile injection", async () => {
+    const config = structuredClone(USER_CONFIG_DEFAULTS);
+    for (const key of ["profile", "reflection", "recallInjection", "index",
+      "embeddings", "links", "evolution", "lessons", "procedures",
+      "consolidation", "voting"] as const) {
+      config.memory[key].enabled = false;
+    }
+    config.memory.reflection.autoStoreNotes = false;
+    config.memory.links.autoGenerate = false;
+    config.memory.retrieve.rewriter.enabled = false;
+    config.localModels.embeddings.enabled = false;
+    writeUserConfigFileSync(getUserConfigPath(stateDir), config);
+    resetConfigCache();
+    const calls: string[] = [];
+    const prompts: string[] = [];
+    const runtime = await createAgentRuntime({
+      workingDir,
+      approvalLevel: 1,
+      overrides: {
+        browserBackend: backend,
+        skipLlamaHealthCheck: true,
+        disableStreaming: true,
+        llamaComplete: async (params) => {
+          calls.push(params.sessionId);
+          prompts.push(params.prompt);
+          return {
+            content: JSON.stringify({ tool: "reply", args: { text: "done" } }),
+            timing: { promptTokens: 10, predictedTokens: 5 },
+            slotId: 0, cacheReused: false,
+          };
+        },
+      },
+    });
+    try {
+      runtime.profileStore.set("project.unverified", "UNVERIFIED_PROFILE_SENTINEL");
+      const before = runtime.profileStore.list();
+      const session = runtime.createSession();
+      await runtime.runTurn(session, "first bounded turn", { maxSteps: 2 });
+      await runtime.runTurn(session, "second bounded turn", { maxSteps: 2 });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(calls).toEqual([session.id, session.id]);
+      expect(prompts.join("\n")).not.toContain("UNVERIFIED_PROFILE_SENTINEL");
+      expect(runtime.profileStore.list()).toEqual(before);
+      expect(runtime.notesStore.count()).toBe(0);
+      expect(runtime.toolRegistry.list().map((tool) => tool.name)).toContain("memory.notes.recall");
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it("wires the full tool catalog (browser + os + skill + finish)", async () => {
     const runtime = await createAgentRuntime({
       workingDir,

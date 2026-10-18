@@ -92,6 +92,7 @@ function grammarRequestFields(params: LlmStreamParams) {
  */
 function turnRequestFields(params: LlmStreamParams) {
   return {
+    ...(params.requestKind ? { requestKind: params.requestKind } : {}),
     ...(typeof params.maxOutputTokens === "number"
       ? { maxOutputTokens: params.maxOutputTokens }
       : {}),

@@ -4,8 +4,9 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { resetConfigCache } from "../../config/index.js";
+import { getConfig, resetConfigCache } from "../../config/index.js";
 import { persistUserLocalModelsConfig } from "../persist-user-local-models-config.js";
+import { persistEmbeddingHybridRecall } from "../persist-embedding-hybrid-recall.js";
 import {
   persistLlmProvider,
   setActiveTextProviderInConfig,
@@ -313,5 +314,28 @@ describe("LocalModelsOrchestrator.restartDaemon", () => {
     // The guard is per-restart, not a latch: the next `R` still works.
     await expect(orchestrator.restartDaemon()).resolves.toBe(true);
     expect(start).toHaveBeenCalledTimes(2);
+  });
+
+  it("reconcile flips memory.embeddings off when the embedding daemon is down", () => {
+    // The `hasModel` guard is gone: the daemon's own liveness is the
+    // source of truth. With the master switch on but no embedding daemon
+    // running, the reconcile must write `memory.embeddings.enabled=false`
+    // so hybrid recall degrades to FTS5 instead of pointing at a dead URL.
+    persistEmbeddingHybridRecall({
+      enabled: true,
+      modelId: "nomic-embed-text-v1.5",
+    });
+    resetConfigCache();
+    expect(getConfig().memory.embeddings.enabled).toBe(true);
+
+    const orchestrator = new LocalModelsOrchestrator({
+      emit: () => {},
+      subscribe: () => () => {},
+    });
+    (orchestrator as unknown as {
+      reconcileHybridRecallFromDaemon: (emb: { running: boolean }) => void;
+    }).reconcileHybridRecallFromDaemon({ running: false });
+
+    expect(getConfig().memory.embeddings.enabled).toBe(false);
   });
 });

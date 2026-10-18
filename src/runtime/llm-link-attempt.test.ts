@@ -25,6 +25,7 @@ const params: LlmStreamParams = {
   grammar: 'root ::= "ok"',
   slotId: 0,
   sessionId: "s1",
+  requestKind: "main",
   tools: [{ type: "function", function: { name: "reply" } }],
 };
 
@@ -48,10 +49,12 @@ describe("llm-link-attempt — the structured prompt", () => {
     await completeOnLink(deps, params, "native_tools");
     expect(requests[0]?.messages).toBe(messages);
     expect(requests[0]?.tools).toEqual(params.tools);
+    expect(requests[0]?.requestKind).toBe("main");
 
     const { primed } = await openStreamOnLink(deps, params, "native_tools");
     for (;;) if ((await primed.rest.next()).done) break;
     expect(requests[1]?.messages).toBe(messages);
+    expect(requests[1]?.requestKind).toBe("main");
   });
 
   it("never reaches a grammar link, which gets the flat prompt and the GBNF", async () => {

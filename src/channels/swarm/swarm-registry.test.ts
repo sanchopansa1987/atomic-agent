@@ -86,16 +86,25 @@ describe("SwarmRegistry", () => {
   let dir: string;
   let logger: StructuredLogger;
   const envKeys: string[] = [];
+  let primaryToken: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "atomic-swarm-"));
     logger = new StructuredLogger({ level: "warn", sinks: [] });
     resetConfigCache();
+    // `loadDotenvFromStateDir` (via a parallel test's `getConfig`) can set
+    // `TELEGRAM_BOT_TOKEN` from the real `~/.atomic-agent/.env`; this suite
+    // asserts that primary key is never touched by a unit token write, so
+    // it must be isolated and restored.
+    primaryToken = process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.TELEGRAM_BOT_TOKEN;
   });
 
   afterEach(() => {
     for (const k of envKeys) delete process.env[k];
     envKeys.length = 0;
+    if (primaryToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+    else process.env.TELEGRAM_BOT_TOKEN = primaryToken;
     rmSync(dir, { recursive: true, force: true });
   });
 
