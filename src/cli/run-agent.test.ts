@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { Readable, PassThrough } from "node:stream";
 
 import type { CompletionResult } from "../llm/llama-server-client.js";
 import { resetConfigCache } from "../config/index.js";
@@ -100,7 +100,7 @@ describe("formatLlamaUnreachableHint", () => {
 });
 
 /** Raw model output the stubbed llama-server replays on every step. */
-const model = vi.hoisted(() => ({ emits: "" }));
+const model = vi.hoisted(() => ({ emits: "", queue: [] as string[] }));
 
 /** The options `runAgentCommand` handed `runtime.runTurn`, per turn. */
 const turnOptions = vi.hoisted(() => [] as Array<Record<string, unknown>>);
@@ -137,8 +137,8 @@ vi.mock("../runtime/bootstrap.js", async (importOriginal) => {
     // Post-turn reflection shares the completion seam but expects prose,
     // not a tool call; feeding it the step payload would have it parse
     // the fixture as notes.
-    if (params.sessionId.startsWith("reflection:")) return completion("");
-    return completion(model.emits);
+    if (/^(reflection|rewriter|link|vote|distill):/.test(params.sessionId)) return completion("");
+    return completion(model.queue.shift() ?? model.emits);
   };
   return {
     ...actual,
@@ -185,6 +185,7 @@ describe("runAgentCommand exit codes", () => {
     process.env.ATOMIC_AGENT_GRAMMARS_DIR = join(process.cwd(), "grammars");
     resetConfigCache();
     model.emits = "";
+    model.queue.length = 0;
     stderr = "";
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
@@ -212,6 +213,48 @@ describe("runAgentCommand exit codes", () => {
       configurable: true,
     });
   }
+
+  it("accepts a second turn and quit after an approve-once prompt", async () => {
+    const input = new PassThrough();
+    Object.defineProperty(process, "stdin", { value: input, configurable: true });
+    turnOptions.length = 0;
+    model.queue.push(
+      JSON.stringify({ tool: "os.shell.run", args: { cmd: "printf", args: ["approved"] } }),
+      JSON.stringify({ tool: "reply", args: { text: "first done" } }),
+      JSON.stringify({ tool: "reply", args: { text: "second done" } }),
+    );
+    let prompts = 0;
+    let approvals = 0;
+    vi.mocked(process.stderr.write).mockImplementation((chunk: unknown) => {
+      const text = String(chunk);
+      stderr += text;
+      if (text.includes("you> ")) {
+        const line = ["first", "second", "/quit"][prompts++];
+        if (line) {
+          setImmediate(() => {
+            input.write(line + "\n");
+            // End the stream once the quit command is queued, so the turn
+            // closes on its own instead of on a wall-clock timeout.
+            if (line === "/quit") input.end();
+          });
+        }
+      }
+      if (text.includes("approve?")) {
+        approvals++;
+        setImmediate(() => input.write("y\n"));
+      }
+      return true;
+    });
+    try {
+      const code = await runAgentCommand(["--cwd", workingDir]);
+      expect(code, stderr).toBe(0);
+      expect(approvals).toBe(1);
+      expect(turnOptions).toHaveLength(2);
+      expect(prompts).toBe(3);
+    } finally {
+      input.destroy();
+    }
+  }, 10000);
 
   it("exits 2 when --cwd points at a path that does not exist", async () => {
     const missing = join(workingDir, "definitely-not-here");

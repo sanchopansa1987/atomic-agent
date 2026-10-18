@@ -208,9 +208,9 @@ describe("rail session list — manual order", () => {
 
   it("puts threads the order has never seen on top", () => {
     const stored = [
-      spokenTo("s-new", "started after the arranging"),
-      spokenTo("s-2", "second"),
       spokenTo("s-1", "first"),
+      spokenTo("s-2", "second"),
+      spokenTo("s-new", "started after the arranging"),
     ];
     const { orchestrator, rail } = harness(stored, { order: ["s-1", "s-2"] });
     orchestrator.refreshRecentSessions();
