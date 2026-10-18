@@ -47,6 +47,12 @@ export interface OpenAiBodyOptions {
    * always flat. Default `native`.
    */
   messageShape?: "native" | "flat";
+  /**
+   * Field name to echo a reasoning model's own prior reasoning under
+   * (see `NativeMessageOptions.reasoningField`). Set by the provider from
+   * its resolved `reasoningFormat`; absent sends nothing.
+   */
+  reasoningField?: string;
   /** The adapter's tool-name escape, for the history's `tool_calls`. */
   nameEscape?: (qualifiedName: string) => string;
 }
@@ -90,6 +96,7 @@ export function buildOpenAiChatBody(
     resolveMessageShape(filtered, options) === "native" && filtered.messages
       ? buildNativeMessages(filtered.messages, {
           nameEscape: options.nameEscape ?? nameEscape,
+          ...(options.reasoningField ? { reasoningField: options.reasoningField } : {}),
         })
       : [
           {

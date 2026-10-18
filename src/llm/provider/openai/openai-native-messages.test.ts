@@ -22,6 +22,54 @@ function prompt(overrides: Partial<PromptMessages>): PromptMessages {
 }
 
 describe("buildNativeMessages", () => {
+  describe("reasoning echo (DeepSeek V4 thinking mode)", () => {
+    const withReasoning = prompt({
+      turns: [
+        { kind: "user", text: "hi" },
+        { kind: "assistant_reply", text: "hello", reasoning: "greet back" },
+        { kind: "user", text: "again" },
+        { kind: "assistant_tool_call", tool: "os.fs.read", args: { path: "a.txt" }, reasoning: "need the file" },
+        { kind: "tool_result", tool: "os.fs.read", status: "ok", body: "x", truncated: false },
+      ],
+    });
+
+    it("echoes stored reasoning on both assistant turn shapes", () => {
+      const messages = buildNativeMessages(withReasoning, {
+        ...options,
+        reasoningField: "reasoning_content",
+      });
+      const assistant = messages.filter((m) => m.role === "assistant");
+      expect(assistant[0]).toMatchObject({ content: "hello", reasoning_content: "greet back" });
+      expect(assistant[1]).toMatchObject({ reasoning_content: "need the file" });
+    });
+
+    it("honours an alternative field name", () => {
+      const messages = buildNativeMessages(withReasoning, { ...options, reasoningField: "reasoning" });
+      const firstAssistant = messages.find((m) => m.role === "assistant")!;
+      expect(firstAssistant).toMatchObject({ content: "hello", reasoning: "greet back" });
+      expect(firstAssistant).not.toHaveProperty("reasoning_content");
+    });
+
+    it("sends nothing when the provider defines no reasoning field", () => {
+      const messages = buildNativeMessages(withReasoning, options);
+      for (const message of messages) {
+        expect(message).not.toHaveProperty("reasoning_content");
+        expect(message).not.toHaveProperty("reasoning");
+      }
+    });
+
+    it("never adds the field to turns that carry no reasoning", () => {
+      const messages = buildNativeMessages(
+        prompt({ turns: [{ kind: "assistant_reply", text: "plain" }] }),
+        { ...options, reasoningField: "reasoning_content" },
+      );
+      expect(messages.find((m) => m.role === "assistant")).toEqual({
+        role: "assistant",
+        content: "plain",
+      });
+    });
+  });
+
   it("lays the packed turns out as system, real turns and one final user message", () => {
     const messages = buildNativeMessages(
       prompt({

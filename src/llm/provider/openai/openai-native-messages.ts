@@ -33,6 +33,15 @@ export type OpenAiChatMessage = Record<string, unknown>;
 export interface NativeMessageOptions {
   /** The adapter's escape for tool names (`os.fs.read` → `os__fs__read`). */
   nameEscape: (qualifiedName: string) => string;
+  /**
+   * Field name a reasoning model wants its own prior reasoning echoed
+   * under. DeepSeek V4 in thinking mode rejects the next request outright
+   * ("The `reasoning_content` in the thinking mode must be passed back to
+   * the API") and returns HTTP 400, so the assistant turn that produced
+   * reasoning must carry it again. `undefined` sends nothing, which is
+   * right for every provider that does not define the field.
+   */
+  reasoningField?: string;
 }
 
 export const NO_RESULT_RECORDED = "(no result recorded)";
@@ -55,6 +64,13 @@ export function buildNativeMessages(
     out.push({ role: "user", content: orphanLines.join("\n") });
     orphanLines = [];
   };
+  // Echo reasoning under the field the model defines, when the turn has
+  // any. Turns carry it only if the model actually emitted reasoning, so a
+  // non-reasoning model never sees the field.
+  const echoReasoning = (reasoning: string | undefined): Record<string, unknown> =>
+    options.reasoningField && reasoning
+      ? { [options.reasoningField]: reasoning }
+      : {};
   const answerPending = (): void => {
     for (const id of pending) {
       out.push({ role: "tool", tool_call_id: id, content: NO_RESULT_RECORDED });
@@ -72,7 +88,11 @@ export function buildNativeMessages(
       case "assistant_reply":
         answerPending();
         flushOrphans();
-        out.push({ role: "assistant", content: turn.text });
+        out.push({
+          role: "assistant",
+          content: turn.text,
+          ...echoReasoning(turn.reasoning),
+        });
         break;
       case "assistant_tool_call": {
         answerPending();
@@ -81,6 +101,7 @@ export function buildNativeMessages(
         out.push({
           role: "assistant",
           content: null,
+          ...echoReasoning(turn.reasoning),
           tool_calls: [
             {
               id,

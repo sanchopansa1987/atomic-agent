@@ -53,6 +53,7 @@ import {
 } from "./qwen-tagged-tool-response-adapter.js";
 import type { CreditLimitLogger } from "./plan-credit-limit-retry.js";
 import { sendWithStructuredOutputFallback } from "./structured-output-fallback.js";
+import { resolveMemoryProxyHttp } from "./resolve-memory-proxy-http.js";
 
 export interface OpenAiProviderOptions {
   id: string;
@@ -201,8 +202,10 @@ export class OpenAiProvider implements LlmProvider {
     this.strictTools = options.strictTools ?? false;
     this.providerPreferences = options.providerPreferences;
     this.messageShape = options.messageShape ?? "native";
+    const reasoningField = reasoningEchoField(this.reasoningFormat);
     this.bodyOptions = {
       nameEscape: (name) => this.toolCallAdapter.nameEscape(name),
+      ...(reasoningField ? { reasoningField } : {}),
       ...(options.providerKind ? { providerKind: options.providerKind } : {}),
       ...(options.modelParams ? { modelParams: options.modelParams } : {}),
       ...(resolveAnthropicCacheControl(options)
@@ -236,7 +239,7 @@ export class OpenAiProvider implements LlmProvider {
         (req) => this.buildBody(req, false, shape),
         (body) =>
           openAiPostJson(
-            this.http,
+            resolveMemoryProxyHttp(this.http, request),
             `${this.apiPathPrefix}/chat/completions`,
             body,
             request,
@@ -384,7 +387,7 @@ export class OpenAiProvider implements LlmProvider {
         // Opening the stream (connect + status check) happens inside the
         // client's bounded retry, strictly before the first chunk exists.
         const res = await openAiStartStream(
-          this.http,
+          resolveMemoryProxyHttp(this.http, request),
           path,
           body,
           request,
@@ -557,7 +560,7 @@ export class OpenAiProvider implements LlmProvider {
         `${this.http.baseUrl}${this.apiPathPrefix}/models`,
         {
           method: "GET",
-          headers: buildOpenAiHeaders(this.http, false),
+          headers: buildOpenAiHeaders(resolveMemoryProxyHttp(this.http), false),
         },
       );
       return {
@@ -585,7 +588,7 @@ export class OpenAiProvider implements LlmProvider {
       throw new VisionUnsupportedError(this.name);
     }
     return describeImageViaOpenAi(
-      this.http,
+      resolveMemoryProxyHttp(this.http),
       this.defaultChatModel,
       request,
       this.apiPathPrefix,
@@ -594,7 +597,7 @@ export class OpenAiProvider implements LlmProvider {
   }
 
   async listModels(): Promise<readonly string[]> {
-    const json = await openAiGetJson(this.http, `${this.apiPathPrefix}/models`);
+    const json = await openAiGetJson(resolveMemoryProxyHttp(this.http), `${this.apiPathPrefix}/models`);
     const data = (json.data as Array<{ id?: string }> | undefined) ?? [];
     return data
       .map((row) => row.id)
@@ -786,4 +789,30 @@ function applyToolCallTerminationSafety(
     stop: false,
     truncated: true,
   };
+}
+
+/**
+ * The message field a model's own prior reasoning must be echoed under, or
+ * `undefined` when the provider defines no such field.
+ *
+ * `reasoning_content` covers every family this runtime documents as
+ * returning chain-of-thought beside `content` (DeepSeek-R1/V4, Qwen with
+ * preserve_thinking, Kimi), and those are exactly the APIs that validate
+ * it on the way back — DeepSeek rejects the next thinking-mode request with
+ * HTTP 400 when it is missing. `auto` therefore echoes under that name; a
+ * model that spells it differently pins `reasoningFormat`, and `none`
+ * disables both reading and echoing.
+ */
+function reasoningEchoField(format: ReasoningFormat): string | undefined {
+  switch (format) {
+    case "none":
+      return undefined;
+    case "delta_reasoning":
+      return "reasoning";
+    case "delta_thinking":
+      return "thinking";
+    case "delta_reasoning_content":
+    case "auto":
+      return "reasoning_content";
+  }
 }
