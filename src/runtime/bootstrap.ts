@@ -119,6 +119,8 @@ import { ProfileStore } from "../memory/profile-store.js";
 import { LessonStore } from "../memory/lessons/lesson-store.js";
 import { ProcedureStore } from "../memory/procedures/procedure-store.js";
 import { createLessonLifecycleHook } from "../memory/lessons/lesson-lifecycle-hook.js";
+import { createDigestHook } from "../memory/digest/digest-hook.js";
+import { createDefaultDigestRunner } from "../memory/digest/digest-runner.js";
 import { createDefaultMemoryContextProvider } from "../memory/memory-context-provider.js";
 import {
   type RewriterLlmComplete,
@@ -233,6 +235,7 @@ import {
   captureModelConfigured,
   captureOnboardingStep,
   sanitizeModelAlias,
+  accumulateSessionUsage,
   TurnUsageMeter,
 } from "../analytics/index.js";
 import {
@@ -2520,6 +2523,14 @@ export async function createAgentRuntime(
           }),
         }
       : {}),
+    // Queue #9 — turn-end digest hook. Always wired so the loop shape is
+    // stable; the runner is inert unless `memory.digest.auto` is on, so no
+    // vault file is written until the operator opts in.
+    digest: createDigestHook({
+      runner: createDefaultDigestRunner(workingDir),
+      logger,
+      enabled: config.memory.digest.auto,
+    }),
     // The loop has no awareness of which session it is currently driving;
     // `emitAgentLoopEvent` resolves that from the per-turn ALS frame so
     // two concurrent sessions never cross-contaminate trace records or
@@ -3106,13 +3117,15 @@ export async function createAgentRuntime(
     turnUsageMeter.begin(session.id);
     try {
       const result = await turnController.enqueue(submission);
+      const usage = turnUsageMeter.snapshot(session.id);
+      result.session = accumulateSessionUsage(result.session, usage);
       captureMessageSent(analytics, analyticsStateStore, {
         provider: providerRegistry.activeText.name,
         model: resolveActiveModelName(),
         latencyMs: Date.now() - startedAt,
         stepCount: result.stepCount,
         outcome: result.reason,
-        ...turnUsageMeter.snapshot(session.id),
+        ...usage,
       });
       return result;
     } catch (error) {

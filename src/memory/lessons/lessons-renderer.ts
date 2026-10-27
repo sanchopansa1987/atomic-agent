@@ -29,7 +29,10 @@ export function renderLessonsSection(
 
 function renderLessonLine(entry: LessonIndexEntry): string {
   const tags = entry.tags.length > 0 ? ` [${entry.tags.join(",")}]` : "";
-  return `*${entry.id}${tags} ${escapeForLine(entry.activation)}`;
+  // Harness S5: a lesson retired mid-session still reads for one session, but
+  // with the marker so the model knows not to lean on it.
+  const marker = entry.status === "deprecated" ? " (deprecated)" : "";
+  return `*${entry.id}${tags} ${escapeForLine(entry.activation)}${marker}`;
 }
 
 /**

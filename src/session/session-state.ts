@@ -207,6 +207,16 @@ export interface SessionState {
    * `SessionStore` persistence. Cross-phase invariant 8.
    */
   recalledProcedures?: readonly ProcedureIndexEntry[];
+  /**
+   * Harness S2. The `### graph` tail block body (hubs + current cluster),
+   * resolved once per turn by the agent-loop via `brain_graph.py` and cached
+   * here so no step re-shells. `undefined` = not resolved; `null` = resolved
+   * but degraded (script missing/slow/empty) so the block is omitted.
+   *
+   * Ephemeral: stripped by `stripEphemeral` below before `SessionStore`
+   * persistence, exactly like `recalledLessons`.
+   */
+  graphSection?: string | null;
 }
 
 export function createEmptySessionState(params: {
@@ -375,7 +385,8 @@ export function stripEphemeral(state: SessionState): SessionState {
     state.recalledNotes === undefined &&
     state.memoryIndex === undefined &&
     state.recalledLessons === undefined &&
-    state.recalledProcedures === undefined
+    state.recalledProcedures === undefined &&
+    state.graphSection === undefined
   ) {
     return state;
   }
@@ -384,6 +395,7 @@ export function stripEphemeral(state: SessionState): SessionState {
     memoryIndex: _m,
     recalledLessons: _l,
     recalledProcedures: _p,
+    graphSection: _g,
     ...rest
   } = state;
   return rest;

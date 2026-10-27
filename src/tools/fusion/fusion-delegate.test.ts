@@ -986,8 +986,10 @@ describe("fusion.delegate", () => {
         "2 tasks: 2 ok
         - [t1] ok — One
         - [t2] ok — Two
+
         [t1] ok — One (1 steps, 0s, 0 tool calls, 0 errors)
         (the worker produced no reply)
+
         [t2] ok — Two (1 steps, 0s, 0 tool calls, 0 errors)
         (the worker produced no reply)"
       `);

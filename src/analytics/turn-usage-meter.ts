@@ -126,3 +126,54 @@ export class TurnUsageMeter {
     };
   }
 }
+
+/** Cumulative token/cost totals persisted on a session. */
+export interface SessionUsageTotals {
+  turns: number;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd?: number;
+}
+
+/** Fold one turn's snapshot into the session's cumulative totals. */
+export function foldUsage(
+  prev: SessionUsageTotals | undefined,
+  snapshot: TurnUsageSnapshot,
+): SessionUsageTotals {
+  const turns = (prev?.turns ?? 0) + 1;
+  const promptTokens = (prev?.promptTokens ?? 0) + (snapshot.promptTokens ?? 0);
+  const completionTokens =
+    (prev?.completionTokens ?? 0) + (snapshot.completionTokens ?? 0);
+  const hadCost = prev?.costUsd !== undefined || snapshot.costUsd !== undefined;
+  const costUsd = (prev?.costUsd ?? 0) + (snapshot.costUsd ?? 0);
+  return {
+    turns,
+    promptTokens,
+    completionTokens,
+    ...(hadCost ? { costUsd } : {}),
+  };
+}
+
+/**
+ * Persist a turn's usage onto a session by folding it into the cumulative
+ * totals kept under `metadata.usage`. Pure: returns a new state object.
+ */
+export function accumulateSessionUsage<S extends { metadata: Record<string, unknown> }>(
+  state: S,
+  snapshot: TurnUsageSnapshot,
+): S {
+  const prev = state.metadata.usage as SessionUsageTotals | undefined;
+  return {
+    ...state,
+    metadata: { ...state.metadata, usage: foldUsage(prev, snapshot) },
+  };
+}
+
+/** One summary line for a session's cumulative token spend. */
+export function formatSessionUsage(totals: SessionUsageTotals): string {
+  const cost =
+    totals.costUsd !== undefined
+      ? `est_cost=$${totals.costUsd.toFixed(4)}`
+      : "est_cost=unpriced";
+  return `turns=${totals.turns} prompt=${totals.promptTokens} completion=${totals.completionTokens} ${cost}`;
+}

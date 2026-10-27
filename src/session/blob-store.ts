@@ -95,6 +95,38 @@ export class BlobStore {
   }
 
   /**
+   * Resolve a hash prefix (8..64 hex chars) to the one blob it names.
+   *
+   * `tool.recall` kept being handed a truncated pointer, and demanding all 64
+   * characters turned a recoverable result into a dead end — the reader could
+   * see `[truncated]` and still not reach the body. A prefix names one blob;
+   * only ambiguity is worth refusing, and it says so.
+   */
+  async resolvePrefix(prefix: string): Promise<string | null> {
+    const p = prefix.trim().toLowerCase();
+    if (!/^[a-f0-9]{8,64}$/.test(p)) return null;
+    if (p.length === 64) return (await this.has(p)) ? p : null;
+    const shard = p.slice(0, 2);
+    let files: string[];
+    try {
+      files = await readdir(join(this.rootDir, shard));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+    const matches = files.filter(
+      (file) => /^[a-f0-9]{62}$/.test(file) && `${shard}${file}`.startsWith(p),
+    );
+    if (matches.length === 1) return `${shard}${matches[0]}`;
+    if (matches.length > 1) {
+      throw new Error(
+        `blob prefix "${prefix}" is ambiguous (${matches.length} stored outputs match); pass more characters`,
+      );
+    }
+    return null;
+  }
+
+  /**
    * Best-effort GC. Removes blobs older than maxAgeMs (if supplied), then
    * if total bytes > maxBytes deletes oldest-first (by mtime) until total <= maxBytes.
    */

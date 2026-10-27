@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { dirname } from "node:path";
 import { resolveToolName } from "./tool-name-resolution.js";
 import { projectWorkflowGuard } from "./project-workflow.js";
 import {
@@ -29,8 +31,10 @@ import {
 import { wouldRefuse as planModeWouldRefuse } from "./plan-mode.js";
 import { wouldRefuse as fusionGateWouldRefuse } from "./fusion-orchestrator-mode.js";
 import {
+  formatTruncatedEvidenceNotice,
   formatUnverifiedClaimNotice,
   formatUnverifiedClaimRefusal,
+  truncatedEvidenceClaims,
   turnToolCalls,
   unverifiedClaims,
   type CheckClaim,
@@ -500,6 +504,8 @@ export type StepTerminal = "turn" | "session" | null;
  */
 export interface StepOutcome {
   toolCalls: ToolCallPayload[];
+  /** One-shot notice: the lesson this step's failure matched, if any. */
+  failureLessonNotice?: string;
   toolResults: CompressedToolResult[];
   completion: CompletionResult;
   prompt: BuiltPrompt;
@@ -612,9 +618,19 @@ export async function executeStep(
         ? config.agent.conversationMaxTokens : CONVERSATION_CAP_AUTO_FALLBACK;
       const window = deps.contextWindow ?? deps.profile.contextWindow;
       const reserve = params.maxTokens ?? params.maxOutputTokens ?? config.localModels.completionMaxTokens;
-      const budget = typeof window === "number" && Number.isFinite(window) && window > 0
-        ? Math.max(0, Math.min(configuredCap, window - reserve)) : configuredCap;
       const tools = { tools: params.tools, tool_choice: params.toolChoice, response_format: params.responseFormat };
+      // `requiredTokens` below prices the WHOLE native body: the fixed prefix
+      // (system prompt, memory sections, loaded tool schemas) plus the packed
+      // conversation. `configuredCap` is a policy cap on the conversation
+      // SECTION only — `packConversation` already packs to
+      // `conversationCapEffective`, which is `configuredCap` MINUS that fixed
+      // prefix and the completion reserve. Comparing the whole body against
+      // the unreduced `configuredCap` charges the prefix twice and refuses
+      // requests that fit the window, which is what made a resumed turn
+      // re-trip the same budget forever. When the window is known, the only
+      // true ceiling is the window minus the output reserve.
+      const budget = typeof window === "number" && Number.isFinite(window) && window > 0
+        ? Math.max(0, window - reserve) : configuredCap;
       const messages = params.messages
         ? buildNativeMessages(params.messages, { nameEscape, reasoningField: "reasoning_content" })
         : [{ role: "user", content: params.prompt }];
@@ -1672,19 +1688,35 @@ async function executeStepInner(
     tail.tool === "reply" &&
     typeof tail.args?.text === "string"
   ) {
-    unverified = unverifiedClaims(tail.args.text, [
+    const evidenceCalls = [
       ...turnToolCalls(ctx.session.turns),
       ...calls.slice(0, -1).map((call) => ({ tool: call.tool, args: call.args ?? {} })),
-    ]);
+    ];
+    // Elided evidence is not evidence. A claim backed only by a truncated run is
+    // reported separately from a claim with nothing behind it, because the fix
+    // differs: re-run narrower, not "run a check".
+    const truncatedOnly = truncatedEvidenceClaims(tail.args.text, evidenceCalls);
+    const truncatedKeys = new Set(
+      truncatedOnly.map((claim) => `${claim.kind}\u0000${claim.text}`),
+    );
+    unverified = [
+      ...unverifiedClaims(tail.args.text, evidenceCalls).filter(
+        (claim) => !truncatedKeys.has(`${claim.kind}\u0000${claim.text}`),
+      ),
+      ...truncatedOnly,
+    ];
     if (unverified.length > 0 && ctx.terminalOnly !== true) {
       if (!deps.claimEvidence.noticed()) {
         deps.claimEvidence.markNoticed();
-        const notice = formatUnverifiedClaimNotice(unverified);
+        const notice =
+          truncatedOnly.length > 0
+            ? formatTruncatedEvidenceNotice(truncatedOnly)
+            : formatUnverifiedClaimNotice(unverified, evidenceCalls);
         trimmedBatchNotice =
           trimmedBatchNotice === undefined
             ? notice
             : `${trimmedBatchNotice}\n\n${notice}`;
-        claimRefusal = formatUnverifiedClaimRefusal(unverified);
+        claimRefusal = formatUnverifiedClaimRefusal(unverified, evidenceCalls);
         suppressedTerminal = tail;
         calls = calls.slice(0, -1);
         deps.logger?.warn("reply claims a check that did not run; held once", {
@@ -1787,7 +1819,11 @@ async function executeStepInner(
   // the next call, and nothing the model wrote ever widens it.
   const readRoots = userNamedPaths(ctx.session.turns);
   const runBatch = runInOrder ? executeCallsInOrder : executeBatch;
-  const workflowGuard = projectWorkflowGuard(ctx.session.workingDir, ctx.session.turns);
+  const workflowGuard = projectWorkflowGuard(
+    ctx.session.workingDir,
+    ctx.session.turns,
+    [...loadedSkillNames],
+  );
   const batchOutcome = await runBatch(inputs, deps.registry, {
     ...(workflowGuard ? { workflowGuard } : {}),
     workingDir: ctx.session.workingDir,
@@ -1917,6 +1953,36 @@ async function executeStepInner(
     }
   }
 
+  // Failure -> lesson, in the step that saw the failure. Before this, a tool error
+  // only reached memory via end-of-turn reflection, so a rule that was wrong
+  // DURING a run was never scored during that run. Error results only, sync with a
+  // hard timeout, and a missing match injects nothing.
+  let failureLessonNotice: string | undefined;
+  if (process.env.AGENT_FAILURE_LEARNING !== "0") {
+    for (let i = 0; i < toolResults.length; i += 1) {
+      const result = toolResults[i]!;
+      if (result.status !== "error") continue;
+      const call = calls[i]!;
+      try {
+        const signature = `${call.tool}: ${String(result.summary ?? "")}`.slice(0, 240);
+        const out = spawnSync(
+          process.env.AGENT_PYTHON ?? "python3",
+          ["scripts/failure_to_lesson.py", signature],
+          { cwd: process.env.AGENT_PROJECT_ROOT ?? dirname(process.cwd()), timeout: 800, encoding: "utf8" },
+        );
+        const line = (out.stdout ?? "").trim();
+        if (!line.startsWith("{")) continue;
+        const parsed = JSON.parse(line) as { matched?: number | null; vote_score?: number };
+        if (parsed.matched) {
+          failureLessonNotice = `Lesson #${parsed.matched} matches this failure (vote_score ${parsed.vote_score}). Apply its principle now, or the same mistake repeats.`;
+          break;
+        }
+      } catch {
+        /* never let learning break the step */
+      }
+    }
+  }
+
   // The suppressed terminal joins the step as a call that never ran: its
   // error result is what the transcript, the trace and the loop see, so
   // the model reads on the next step that its reply was not delivered.
@@ -1971,6 +2037,9 @@ async function executeStepInner(
     results: stepResults,
     reasoning,
     terminal,
+    ...(unverified.length > 0
+      ? { unverifiedClaims: unverified.map((claim) => claim.text) }
+      : {}),
     onEvent: deps.onEvent,
   });
 
@@ -2006,6 +2075,7 @@ async function executeStepInner(
   }
   return {
     toolCalls: outcomeCalls,
+    ...(failureLessonNotice !== undefined ? { failureLessonNotice } : {}),
     toolResults: outcomeResults,
     completion,
     prompt,
@@ -3285,8 +3355,6 @@ function buildToolCallRepairPrompt(
       "Make it a single tool call for `reply`, `finish`, approval-gated tools, or any call that depends on a previous result.",
       "Do not repeat the invalid shape.",
       "",
-      "### respond",
-      "Respond now.",
     );
   } else {
     lines.push(
@@ -3294,8 +3362,6 @@ function buildToolCallRepairPrompt(
       "Use a length-1 array for `reply`, `finish`, approval-gated tools, or any call that depends on a previous result.",
       "Do not repeat the invalid batch shape.",
       "",
-      "### respond",
-      "Respond now.",
     );
   }
   const openReasoning = promptCarriedPrefill
@@ -3660,6 +3726,8 @@ interface AppendBatchedTurnsParams {
   results: readonly CompressedToolResult[];
   reasoning: string;
   terminal: StepTerminal;
+  /** Claim texts this step's reply asserted without a backing call. */
+  unverifiedClaims?: string[];
   onEvent?: (event: StepEvent) => void;
 }
 
@@ -3701,7 +3769,8 @@ export function readReplyAttachments(
  * call/result pairing.
  */
 function appendBatchedTurns(params: AppendBatchedTurnsParams): SessionState {
-  const { state, calls, results, reasoning, terminal, onEvent } = params;
+  const { state, calls, results, reasoning, terminal, unverifiedClaims, onEvent } =
+    params;
 
   // `reply` collapses into `assistant_reply` regardless of batch
   // size. For a batched step the terminal is guaranteed to be at the
@@ -3767,6 +3836,9 @@ function appendBatchedTurns(params: AppendBatchedTurnsParams): SessionState {
         // exists; otherwise the reply itself owns the <think> block.
         ...(!hasNonTerminal && reasoning.length > 0 ? { reasoning } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
+        ...(unverifiedClaims !== undefined && unverifiedClaims.length > 0
+          ? { unverifiedClaims }
+          : {}),
       }),
     );
   }

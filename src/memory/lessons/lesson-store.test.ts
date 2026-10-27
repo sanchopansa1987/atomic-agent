@@ -268,6 +268,38 @@ describe("LessonStore", () => {
     expect(fetched?.failureCount).toBe(1);
   });
 
+  it("demotes a lesson once failure_count >= 3 and exceeds success_count", () => {
+    const lesson = h.store.create({
+      activation: "a",
+      principle: "p",
+      parentIds: [1],
+    });
+    h.store.bumpFailure(lesson.id);
+    h.store.bumpFailure(lesson.id);
+    expect(h.store.getById(lesson.id)?.status).toBe("active");
+    h.store.bumpFailure(lesson.id);
+    const fetched = h.store.getById(lesson.id);
+    expect(fetched?.status).toBe("deprecated");
+    expect(fetched?.failureCount).toBe(3);
+    expect(fetched?.deprecatedAt).not.toBeNull();
+  });
+
+  it("does not auto-deprecate a lesson with two successes", () => {
+    const lesson = h.store.create({
+      activation: "a",
+      principle: "p",
+      parentIds: [1],
+    });
+    h.store.bumpSuccess(lesson.id);
+    h.store.bumpSuccess(lesson.id);
+    h.store.bumpFailure(lesson.id);
+    h.store.bumpFailure(lesson.id);
+    h.store.bumpFailure(lesson.id);
+    const fetched = h.store.getById(lesson.id);
+    expect(fetched?.status).toBe("active");
+    expect(fetched?.failureCount).toBe(3);
+  });
+
   it("pickOverflowForDeprecation respects maxEntries", () => {
     h.dispose();
     const dir = mkdtempSync(join(tmpdir(), "atomic-lessons-cap-"));

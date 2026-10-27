@@ -1,4 +1,5 @@
 import {
+  TOOL_RESULT_KEEP_PATTERN,
   compressToolResult,
   type CompressedToolResult,
 } from "../../compressor/result-compressor.js";
@@ -32,10 +33,16 @@ const GOG_COMPRESS_OPTIONS = {
  * Before this, the shell path inherited the compressor defaults (400
  * chars / 12 lines), which chopped every listing to `[omitted N lines]`
  * and forced models into unnecessary follow-up calls.
+ *
+ * Raised 8000 → 16_000 (2026-10-23) to match `TOOL_RESULT_RENDER_CAP_CHARS`:
+ * the two caps were fighting, so the compressor elided lines the renderer
+ * would have shown in full. `keepPattern` is now passed too — a failure line
+ * above the tail survived only by luck.
  */
 const DEFAULT_COMPRESS_OPTIONS = {
-  maxSummaryLength: 8000,
+  maxSummaryLength: 16_000,
   maxTailLines: 500,
+  keepPattern: TOOL_RESULT_KEEP_PATTERN,
 } as const;
 
 /** What a result says about the command, fixed when it was started. */

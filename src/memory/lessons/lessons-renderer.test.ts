@@ -57,4 +57,28 @@ describe("renderLessonsSection", () => {
     ]);
     expect(out).not.toContain("principle");
   });
+
+  it("marks a deprecated lesson with a (deprecated) suffix, active ones untouched", () => {
+    const out = renderLessonsSection([
+      {
+        id: 1,
+        activation: "retired rule",
+        tags: [],
+        workingDir: null,
+        updatedAt: 1,
+        status: "deprecated",
+      },
+      {
+        id: 2,
+        activation: "live rule",
+        tags: [],
+        workingDir: null,
+        updatedAt: 2,
+        status: "active",
+      },
+    ]);
+    expect(out).toBe(`*1 retired rule (deprecated)\n*2 live rule`);
+    // The marker appears exactly once (for the deprecated row).
+    expect(out?.match(/\(deprecated\)/g)).toHaveLength(1);
+  });
 });

@@ -383,6 +383,12 @@ export function buildPrompt(input: BuildPromptInput): BuiltPrompt {
   if (lessons !== null) {
     tailAfter.push("### lessons", lessons, ``);
   }
+  // Harness S2: the graph recall block sits between lessons and procedures
+  // (ordering is pinned in build-prompt.test.ts). `undefined`/`null` both mean
+  // "no block" — a degraded read is indistinguishable from a disabled one.
+  if (input.session.graphSection) {
+    tailAfter.push("### graph", input.session.graphSection, ``);
+  }
   if (procedures !== null) {
     tailAfter.push("### procedures", procedures, ``);
   }
@@ -409,13 +415,16 @@ export function buildPrompt(input: BuildPromptInput): BuiltPrompt {
       ``,
     );
   }
-  // Static 2-line emit anchor right before the (optional) reasoning prefill.
-  // Kept out of the stable prefix so it sits as close as possible to the
-  // generation point, which empirically prevents reasoning-mode repetition
-  // loops (e.g. "I will write the response. I will check the response."
-  // observed when the only trailing directive lived ~13k tokens upstream).
-  // Byte-stable and short, so it does not meaningfully hurt cache reuse.
-  tailAfter.push(`### respond`, `Respond now.`, ``);
+  // Heading-only emit anchor: the `Respond now.` imperative under it was
+  // removed (2026-10-23) because it pushed the model toward fast,
+  // half-finished turns. The bare heading still marks the agent step for
+  // steering (`prompt.includes("### respond")`) and still gives reasoning
+  // profiles a last directive before the prefill; the ordering tests keep
+  // it as the tail's final block.
+  // ponytail: the heading is a marker, not an instruction — do not add
+  // sentences under it. If reasoning-mode repetition loops return, that is
+  // the prefill's problem, not something another imperative fixes.
+  tailAfter.push(`### respond`, ``);
   // The structured form stops here: the framing and prefill below are
   // text-completion artifacts a chat transport never sees (they are
   // suppressed for it anyway — `suppressReasoningPrefill`).

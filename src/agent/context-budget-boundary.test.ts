@@ -91,6 +91,19 @@ function makeRegistry(): ToolRegistry {
   return registry;
 }
 
+function replyCompletion() {
+  return {
+    content: JSON.stringify([{ tool: "reply", args: { text: "ok" } }]),
+    reasoningContent: "",
+    stop: true,
+    truncated: false,
+    timing: { promptMs: 1, predictedMs: 1, promptTokens: 20, predictedTokens: 5 },
+    cacheHitTokens: 0,
+    slotId: -1,
+    modelId: "mock",
+  };
+}
+
 describe("native request budget boundary", () => {
   it("hard-excludes non-surfaced schemas from the wire", async () => {
     const seen: string[][] = [];
@@ -271,5 +284,183 @@ describe("native request budget boundary", () => {
 
     expect(submissions).toBe(1);
     expect(outcome.terminal).toBe("turn");
+  });
+
+  it("injects a saved continuation handoff once and does not replay it", async () => {
+    const captured: Array<Array<{ kind: string; text?: string }>> = [];
+    const makeAgent = () =>
+      new AgentLoop({
+        registry: makeRegistry(),
+        slotManager: new SlotManager(2),
+        llmComplete: async (params) => {
+          captured.push(
+            (params.messages?.turns ?? []) as Array<{ kind: string; text?: string }>,
+          );
+          return replyCompletion();
+        },
+        grammar: "",
+        profile: PLAIN_INSTRUCT_PROFILE,
+        toolTransport: "native_tools",
+        toolCallAdapter: null,
+        supportsSlotAffinity: false,
+        toolDescriptors: DEFAULT_TOOL_DESCRIPTORS,
+        capabilities: CAPS,
+        skillCatalog: [],
+      });
+
+    const session = {
+      ...createEmptySessionState({ id: "s-resume", workingDir: "/w" }),
+      turns: [userTurn("say hi", 1)],
+      metadata: {
+        continuationHandoff: "resume from the budget stop",
+        continuationHandoffAt: 42,
+      },
+    };
+
+    const first = await makeAgent().runTurn(session, {
+      userMessage: "continue",
+      autoContinue: false,
+      maxSteps: 5,
+      taskMaxSteps: 20,
+      signal: new AbortController().signal,
+    });
+
+    const firstUserTexts = (captured[0] ?? [])
+      .filter((t) => t.kind === "user")
+      .map((t) => t.text ?? "");
+    const injected = firstUserTexts.filter((t) => t.includes("[resuming prior turn]"));
+    expect(injected).toHaveLength(1);
+    expect(injected[0]).toBe("[resuming prior turn]\n\nresume from the budget stop");
+    expect(
+      (first.session.metadata as { continuationHandoffConsumedAt?: number })
+        .continuationHandoffConsumedAt,
+    ).toBe(42);
+
+    const second = await makeAgent().runTurn(first.session, {
+      userMessage: "again",
+      autoContinue: false,
+      maxSteps: 5,
+      taskMaxSteps: 20,
+      signal: new AbortController().signal,
+    });
+    const secondUserTexts = (captured[1] ?? [])
+      .filter((t) => t.kind === "user")
+      .map((t) => t.text ?? "");
+    // The first turn's injected turn is now history; a replay would add a second.
+    expect(secondUserTexts.filter((t) => t.includes("[resuming prior turn]"))).toHaveLength(1);
+  });
+
+  it("a resumed turn does not immediately re-trip the budget", async () => {
+    const stopAgent = new AgentLoop({
+      registry: makeRegistry(),
+      slotManager: new SlotManager(2),
+      llmComplete: async () => {
+        throw new Error("must not submit");
+      },
+      grammar: "",
+      profile: PLAIN_INSTRUCT_PROFILE,
+      toolTransport: "native_tools",
+      toolCallAdapter: null,
+      supportsSlotAffinity: false,
+      toolDescriptors: DEFAULT_TOOL_DESCRIPTORS,
+      capabilities: CAPS,
+      skillCatalog: [],
+    });
+    const stopSession = {
+      ...createEmptySessionState({ id: "s-resume-budget", workingDir: "/w" }),
+      turns: oneActiveTask(),
+    };
+    const stopped = await stopAgent.runTurn(stopSession, {
+      userMessage: "Finish the analysis without rereading everything",
+      autoContinue: true,
+      maxSteps: 5,
+      taskMaxSteps: 20,
+      signal: new AbortController().signal,
+    });
+    expect(stopped.stopCause).toBe("context_budget");
+
+    let submissions = 0;
+    const resumeAgent = new AgentLoop({
+      registry: makeRegistry(),
+      slotManager: new SlotManager(2),
+      llmComplete: async () => {
+        submissions += 1;
+        return replyCompletion();
+      },
+      grammar: "",
+      profile: PLAIN_INSTRUCT_PROFILE,
+      toolTransport: "native_tools",
+      toolCallAdapter: null,
+      supportsSlotAffinity: false,
+      toolDescriptors: DEFAULT_TOOL_DESCRIPTORS,
+      capabilities: CAPS,
+      skillCatalog: [],
+    });
+    const resumed = await resumeAgent.runTurn(stopped.session, {
+      userMessage: "continue",
+      autoContinue: false,
+      maxSteps: 5,
+      taskMaxSteps: 20,
+      signal: new AbortController().signal,
+    });
+
+    // Honest outcome: a same-session resume re-trips the budget. The handoff
+    // (~300 tokens) is not the cause — `packConversation` cuts the over-budget
+    // task but still keeps its reasoning tail (11 turns), and `checkRequest`'s
+    // full-request estimate (native tool schemas included) stays over the 32k
+    // cap. The handoff is injected exactly once, so it is not being re-injected.
+    expect(submissions).toBe(0);
+    expect(resumed.stopCause).toBe("context_budget");
+    expect(
+      resumed.session.turns.filter(
+        (t) => t.kind === "user" && (t.text ?? "").startsWith("[resuming prior turn]"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("a window that fits the request lets a resumed turn run", async () => {
+    // The inverse of the case above. `configuredCap` (~32k) is a policy cap on
+    // the conversation SECTION; `packConversation` already packs to
+    // `conversationCapEffective` = configuredCap minus the fixed prefix and the
+    // completion reserve. `checkRequest` used to price the WHOLE native body
+    // (prefix + tools + conversation) against the unreduced cap, so the prefix
+    // was charged twice and a resumed turn re-tripped forever. Once the window
+    // is known and large, the only true ceiling is window minus the output
+    // reserve — the request must go through.
+    const bigWindow = { ...PLAIN_INSTRUCT_PROFILE, contextWindow: 200_000 };
+    const agent = new AgentLoop({
+      registry: makeRegistry(),
+      slotManager: new SlotManager(2),
+      llmComplete: async () => replyCompletion(),
+      grammar: "",
+      profile: bigWindow,
+      toolTransport: "native_tools",
+      toolCallAdapter: null,
+      supportsSlotAffinity: false,
+      toolDescriptors: DEFAULT_TOOL_DESCRIPTORS,
+      capabilities: CAPS,
+      skillCatalog: [],
+    });
+    const session = {
+      ...createEmptySessionState({ id: "s-resume-window", workingDir: "/w" }),
+      turns: oneActiveTask(),
+      metadata: {
+        continuationHandoff: "resume from the budget stop",
+        continuationHandoffAt: 42,
+      },
+    };
+    const resumed = await agent.runTurn(session, {
+      userMessage: "continue",
+      autoContinue: false,
+      maxSteps: 5,
+      taskMaxSteps: 20,
+      signal: new AbortController().signal,
+    });
+    expect(resumed.stopCause).not.toBe("context_budget");
+    expect(
+      resumed.session.turns.filter(
+        (t) => t.kind === "user" && (t.text ?? "").startsWith("[resuming prior turn]"),
+      ),
+    ).toHaveLength(1);
   });
 });

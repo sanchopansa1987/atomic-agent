@@ -17,29 +17,62 @@ function projectRoot(workingDir: string): string | undefined {
   }
 }
 
-// Recognize only simple command forms, never shell chains/substitutions.
-function words(call: ToolCallPayload): string[] {
+const SHELL = /^(?:ba|z|da)?sh$/i;
+const META = /[;&|<>$`\\]/;
+
+function tokens(command: string): string[] {
+  const found = command.match(/"[^"]*"|'[^']*'|[^\s"']+/g) ?? [];
+  return found.map(t => /^(".*"|'.*')$/.test(t) ? t.slice(1, -1) : t);
+}
+
+// Flatten a shell call into one token stream: the command, its argv, and — for
+// `bash -lc "<script>"` — the script's own tokens. Composite scripts (`a; b`,
+// `cd x && y`, `for … done`) flatten too: prerequisite() scans for markers
+// anywhere in the stream now, so the wrapper no longer hides them.
+function commandTokens(call: ToolCallPayload): string[] {
   if (call.tool !== "os.shell.run" || typeof call.args.cmd !== "string") return [];
   const args = call.args.args;
-  if (Array.isArray(args) && args.length) {
-    return args.every(a => typeof a === "string") && !/\s/.test(call.args.cmd)
-      ? [call.args.cmd, ...args as string[]] : [];
+  if (!Array.isArray(args) || args.length === 0) return tokens(call.args.cmd);
+  const head = call.args.cmd;
+  if (SHELL.test(basename(head)) && /^-[A-Za-z]*c[A-Za-z]*$/.test(String(args[0])) &&
+      typeof args[1] === "string") {
+    return [head, String(args[0]), ...tokens(args[1])];
   }
-  if (/[;&|<>$`\\]/.test(call.args.cmd)) return [];
-  const tokens = call.args.cmd.match(/"[^"]*"|'[^']*'|[^\s"']+/g) ?? [];
-  return tokens.map(t => /^(".*"|'.*')$/.test(t) ? t.slice(1, -1) : t);
+  return [head, ...args.map(String)];
 }
 
 function prerequisite(call: ToolCallPayload, root: string, workingDir: string): string | null {
   if (call.tool === "skill.view" && call.args.name === "ponytail") return "ponytail";
-  const argv = words(call);
-  if (argv.length !== 4) return null;
-  if (basename(argv[0]!) === "graft" && argv[1] === "ask" && argv[2]?.trim() && argv[3] === "--source") return "graft";
-  const cwd = typeof call.args.cwd === "string" ? resolve(workingDir, call.args.cwd) : workingDir;
-  if (/^python(?:3(?:\.\d+)?)?$/.test(basename(argv[0]!)) &&
-      resolve(cwd, argv[1]!) === join(root, "scripts/atomic_memory.py")) {
-    if (argv[2] === "search" && argv[3]?.trim()) return "memory";
-    if (argv[2] === "sync" && resolve(cwd, argv[3]!) === join(root, "vault/agent-memory/MEMORY_WORKFLOW_2026-10-01.md")) return "sync";
+  const argv = commandTokens(call);
+  if (!argv.length) return null;
+  // A stack self-audit run satisfies its own prerequisite: the gate must never
+  // demand a check it also blocks (that is a deadlock, not a rule).
+  if (argv.some(w => w.includes("ensure-stack.sh"))) return "stack";
+
+  // Scan the whole argv rather than only a lone simple command. Agents batch
+  // their prerequisites into `bash -lc '<cd … && cmd>'`, `for … done` loops and
+  // `a; b` chains; the old exact-form match was blind to every one of them, so
+  // the same turn both performed the prerequisite and was refused for not
+  // having performed it — 330 such refusals across the recorded runs. Proof of
+  // run is not a security boundary, so a mention inside a composite command
+  // counts.
+  let cwd = typeof call.args.cwd === "string" ? resolve(workingDir, call.args.cwd) : workingDir;
+  const memScript = join(root, "scripts/atomic_memory.py");
+  const syncScript = join(root, "vault/agent-memory/MEMORY_WORKFLOW_2026-10-01.md");
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i]!;
+    const base = basename(word);
+    if (word === "cd" && typeof argv[i + 1] === "string" && !META.test(argv[i + 1]!)) {
+      cwd = resolve(cwd, argv[i + 1]!);
+      continue;
+    }
+    if (base === "graft" && argv[i + 1] === "ask" &&
+        argv[i + 2]?.trim().length && argv[i + 3] === "--source") return "graft";
+    if (!/^python(?:3(?:\.\d+)?)?$/.test(base) || typeof argv[i + 1] !== "string") continue;
+    const script = resolve(cwd, argv[i + 1]!);
+    if (script !== memScript) continue;
+    if (argv[i + 2] === "search" && argv[i + 3]?.trim().length) return "memory";
+    if (argv[i + 2] === "sync" && resolve(cwd, argv[i + 3] ?? "") === syncScript) return "sync";
   }
   return null;
 }
@@ -48,14 +81,20 @@ function prerequisite(call: ToolCallPayload, root: string, workingDir: string): 
 export function projectWorkflowGuard(
   workingDir: string,
   turns: readonly ConversationTurn[],
+  loadedSkills: readonly string[] = [],
 ): ((call: ToolCallPayload) => string | null) | undefined {
   const root = projectRoot(workingDir);
   if (!root) return undefined;
   const completed = new Set<string>();
+  // A skill already loaded this session satisfies `skill.view`: the idempotent
+  // tool answers "already loaded", so demanding the re-view is a false block.
+  if (loadedSkills.includes("ponytail")) completed.add("ponytail");
   const pending = new Map<string, ToolCallPayload[]>();
   for (const turn of turns) {
     if (turn.kind === "user") {
-      completed.clear();
+      // Call↔result pairing is per-turn, but prerequisite satisfaction is
+      // per-session: once memory/graft/ponytail ran, they stay satisfied
+      // across turn boundaries instead of being re-demanded every turn.
       pending.clear();
     } else if (turn.kind === "assistant_tool_call") {
       const queue = pending.get(turn.tool) ?? [];
@@ -86,13 +125,14 @@ export function projectWorkflowGuard(
     const lookup = call.tool === "os.fs.grep" ||
       (["os.fs.read", "os.fs.glob"].includes(call.tool) && sourcePath);
     if (!shell && !mutation && !lookup) return null;
-    const required = shell || mutation ? ["memory", "graft", "ponytail"] : ["memory", "graft"];
+    const required = mutation ? ["memory", "graft", "stack", "ponytail"] : shell ? ["memory", "graft", "ponytail"] : ["memory", "graft"];
     const missing = required.filter(kind => !completed.has(kind));
     if (!missing.length) return null;
     const instructions: Record<string, string> = {
       memory: 'run .venv-dev/bin/python scripts/atomic_memory.py search "<topic>" from the project root',
       graft: 'run graft ask "<target symbol>" --source',
       ponytail: 'call skill.view({name:"ponytail"})',
+      stack: 'run `bash ~/mcp-stack/ensure-stack.sh` and read the self: line',
     };
     return `Project workflow: before this call, ${missing.map(k => instructions[k]).join("; ")}. Complete prerequisites in earlier steps of this user turn. Keep normal approvals; report unavailable services instead of reading credentials.`;
   };

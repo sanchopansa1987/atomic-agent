@@ -10,8 +10,12 @@ import {
   renderPackedConversation,
 } from "./build-prompt-world-conversation.js";
 
+// 800 lines × ~36 chars ≈ 29 KB: comfortably past TOOL_RESULT_RENDER_CAP_CHARS
+// (16 000) so the paging-hint tests actually exercise a cut. At 300 lines the
+// body fit under the raised cap and those tests asserted on a render with no
+// truncation in it — green-by-accident data, red as soon as it mattered.
 const bigFile = Array.from(
-  { length: 300 },
+  { length: 800 },
   (_, i) => `line ${i + 1} ${"y".repeat(30)}`,
 ).join("\n");
 

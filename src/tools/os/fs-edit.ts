@@ -43,7 +43,9 @@ export function buildOsFsEditTool(
       const occurrences = countOccurrences(original, args.oldString);
       if (occurrences === 0) {
         throw new Error(
-          "os.fs.edit: `oldString` was not found in the target file. Provide the exact substring (including whitespace/indent).",
+          "os.fs.edit: `oldString` was not found in the target file. " +
+            nearestMatchHint(original, args.oldString) +
+            " Provide the exact substring (including whitespace/indent).",
         );
       }
       if (occurrences > 1 && !args.replaceAll) {
@@ -212,4 +214,45 @@ async function atomicWrite(target: string, content: string): Promise<void> {
     }
     throw err;
   }
+}
+
+/**
+ * Say *where* the anchor drifted, not only that it missed. A stale `oldString`
+ * was the most common edit failure in the recorded runs (35 of them), and the
+ * caller cannot see the file to guess its new shape. Reports the nearest line
+ * and its similarity, or admits that nothing is close.
+ */
+export function nearestMatchHint(file: string, oldString: string): string {
+  const anchor = oldString.split("\n").map((line) => line.trim()).find((line) => line.length > 0);
+  if (anchor === undefined) return "";
+  const lines = file.split("\n");
+  let bestLine = 0;
+  let bestScore = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!.trim();
+    if (line.length === 0) continue;
+    const score = trigramOverlap(anchor, line);
+    if (score > bestScore) {
+      bestScore = score;
+      bestLine = i + 1;
+    }
+  }
+  if (bestScore < 0.5) return "No similar line exists — read the file before editing.";
+  const text = lines[bestLine - 1]!.trim();
+  return `Closest line ${bestLine} (${Math.round(bestScore * 100)}% similar): "${text.slice(0, 120)}".`;
+}
+
+function trigramOverlap(a: string, b: string): number {
+  if (a === b) return 1;
+  const grams = (text: string): Set<string> => {
+    const out = new Set<string>();
+    for (let i = 0; i + 2 < text.length; i += 1) out.add(text.slice(i, i + 3));
+    return out;
+  };
+  const left = grams(a);
+  const right = grams(b);
+  if (left.size === 0 || right.size === 0) return 0;
+  let shared = 0;
+  for (const gram of left) if (right.has(gram)) shared += 1;
+  return shared / Math.max(left.size, right.size);
 }

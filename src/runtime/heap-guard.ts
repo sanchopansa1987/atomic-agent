@@ -1,3 +1,4 @@
+import os from "node:os";
 import v8 from "node:v8";
 
 /**
@@ -40,6 +41,18 @@ export const HEAP_WARN_RATIO = 0.75;
 /** Fraction at which a crash is imminent and the wording escalates. */
 export const HEAP_CRITICAL_RATIO = 0.9;
 
+/**
+ * The ceiling to suggest when advising a restart: a third of physical RAM,
+ * clamped to 2048..4096 MB. The old advice was a hardcoded 8192 MB, which is
+ * most of an 8 GB box — following it swaps the machine instead of saving it.
+ * `scripts/atomic_chat.sh` computes the same number, so the advice matches
+ * what the launcher will actually do.
+ */
+export function suggestHeapCeilingMb(totalMemBytes = os.totalmem()): number {
+  const third = Math.floor(totalMemBytes / 3 / 1_048_576);
+  return Math.min(4096, Math.max(2048, third));
+}
+
 export function readProcessHeap(): HeapReading {
   const s = v8.getHeapStatistics();
   return { usedBytes: s.used_heap_size, limitBytes: s.heap_size_limit };
@@ -69,7 +82,7 @@ export function classifyHeap(reading: HeapReading): HeapStatus {
         `memory critical: ${mb(usedBytes)} of ${mb(limitBytes)} used. ` +
         `The agent may be killed by the runtime without warning — finish or ` +
         `save this turn, then restart with a bigger heap: ` +
-        `NODE_OPTIONS=--max-old-space-size=8192`,
+        `NODE_OPTIONS=--max-old-space-size=${suggestHeapCeilingMb()}`,
     };
   }
   if (ratio >= HEAP_WARN_RATIO) {
@@ -81,7 +94,7 @@ export function classifyHeap(reading: HeapReading): HeapStatus {
       message:
         `memory high: ${mb(usedBytes)} of ${mb(limitBytes)} used. ` +
         `Long sessions with large file reads can exhaust the default heap; ` +
-        `restarting with NODE_OPTIONS=--max-old-space-size=8192 raises it.`,
+        `restarting with NODE_OPTIONS=--max-old-space-size=${suggestHeapCeilingMb()} raises it.`,
     };
   }
   return { severity: "ok", usedBytes, limitBytes, ratio, message: null };

@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
+import { Database as DatabaseCtor } from "../native/load-better-sqlite3.js";
 import type {
   PromptMessages,
   PromptTurn,
@@ -19,7 +21,7 @@ import type {
 
 export interface MemoryHit {
   id: string;
-  source: "tdai";
+  source: "tdai" | "local-fallback";
   content: string;
   score: number;
   ts?: string;
@@ -146,21 +148,70 @@ export async function getAgentIdentity(): Promise<AgentIdentity | null> {
   }
 }
 
-/** Query the gateway's conversation search. Never throws; returns [] on any failure. */
+function stateDir(): string {
+  return process.env.ATOMIC_AGENT_STATE_DIR ?? join(homedir(), ".atomic-agent");
+}
+
+/** FTS5-safe query: lower-case, tokenise, quote each term, OR-join. */
+function ftsQuery(text: string): string {
+  const tokens = text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  return tokens.map((t) => `"${t}"*`).join(" OR ");
+}
+
+/**
+ * Read-only local FTS fallback, matching `scripts/atomic_memory.py`
+ * `local_search`: the local index the vault is synced into. Tagged
+ * `local-fallback` so a degraded read is never mistaken for "no memories".
+ */
+function localSearch(text: string, limit: number): MemoryHit[] {
+  const dbPath = join(stateDir(), "memory.sqlite");
+  const query = ftsQuery(text);
+  if (!query || !existsSync(dbPath)) return [];
+  let db: Database.Database | null = null;
+  try {
+    db = new DatabaseCtor(dbPath, { readonly: true, fileMustExist: true });
+    const rows = db
+      .prepare(
+        "SELECT rowid, content FROM memories_fts WHERE memories_fts MATCH ? LIMIT ?",
+      )
+      .all(query, limit) as Array<{ rowid: number; content: string }>;
+    return rows.map((row) => ({
+      id: String(row.rowid),
+      source: "local-fallback" as const,
+      content: String(row.content ?? ""),
+      score: 0,
+    }));
+  } catch {
+    return [];
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * Query the gateway's conversation search. On any failure — missing key,
+ * dead identity probe, transport error, malformed response — it falls
+ * through to the local FTS index and returns `local-fallback` rows, so a
+ * dead gateway never reads as "no memories". A live gateway returning an
+ * empty `messages` list is a genuine negative and stays an empty array.
+ */
 export async function searchMemory(
   query: string,
   options?: SearchMemoryOptions,
 ): Promise<MemoryHit[]> {
+  const cfg = getTdaiGatewayConfig();
+  const topK = options?.topK ?? cfg.topK;
+  const timeoutMs = options?.timeoutMs ?? cfg.timeoutMs;
   try {
-    const cfg = getTdaiGatewayConfig();
     const apiKey = process.env.TDAI_GATEWAY_API_KEY;
-    if (!apiKey) return [];
+    if (!apiKey) throw new Error("missing TDAI_GATEWAY_API_KEY");
 
     const identity = await getAgentIdentity();
-    if (!identity) return [];
-
-    const topK = options?.topK ?? cfg.topK;
-    const timeoutMs = options?.timeoutMs ?? cfg.timeoutMs;
+    if (!identity) throw new Error("gateway identity unavailable");
 
     const body = await postJson(
       `${cfg.baseUrl}/v3/conversation/search`,
@@ -177,8 +228,12 @@ export async function searchMemory(
       },
       timeoutMs,
     );
-    const messages = (body?.data as { messages?: unknown[] } | undefined)?.messages;
-    if (!body || body.code !== 0 || !Array.isArray(messages)) return [];
+    if (!body) throw new Error("gateway returned no search results");
+    if (body.code !== 0) throw new Error(`gateway returned code ${String(body.code)}`);
+    const messages = (body.data as { messages?: unknown[] } | undefined)?.messages;
+    if (!Array.isArray(messages)) {
+      throw new Error("gateway returned no search results");
+    }
 
     return messages
       .map((m) => {
@@ -192,8 +247,11 @@ export async function searchMemory(
         };
       })
       .filter((h) => h.content.length > 0);
-  } catch {
-    return [];
+  } catch (err) {
+    process.stderr.write(
+      `[tdai] gateway unavailable (${err instanceof Error ? err.message : String(err)}); using the local index\n`,
+    );
+    return localSearch(query, topK);
   }
 }
 

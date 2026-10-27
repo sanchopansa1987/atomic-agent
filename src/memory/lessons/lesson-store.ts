@@ -119,6 +119,13 @@ export interface LessonIndexEntry {
   tags: string[];
   workingDir: string | null;
   updatedAt: number;
+  /**
+   * Harness S5. Optional lifecycle flag so the `### lessons` renderer can
+   * append `(deprecated)` for a lesson retired mid-session. `listIndex` /
+   * `recall` filter to `active`, so entries they return are always `active`;
+   * callers that surface a just-deprecated lesson set this explicitly.
+   */
+  status?: "active" | "deprecated";
 }
 
 /** Maximum `activation` length. Roughly one sentence. */
@@ -465,7 +472,26 @@ export class LessonStore {
     const r = this.bumpFailureStmt.run({ id: normalised, now }) as {
       changes: number;
     };
-    return r.changes > 0;
+    if (r.changes === 0) return false;
+    // Harness S5 — outcome→behaviour loop. A lesson that keeps failing demotes
+    // itself: failure_count ≥ 3 AND failure_count > success_count, with
+    // success_count < 2 (a rule that demonstrably worked is not retired by three
+    // unlucky turns). `markDeprecated` is itself guarded by `status = 'active'`,
+    // so a second failure on an already-deprecated row is a no-op.
+    const lesson = this.getById(normalised);
+    if (
+      lesson !== null &&
+      lesson.status === "active" &&
+      lesson.failureCount >= 3 &&
+      lesson.failureCount > lesson.successCount &&
+      lesson.successCount < 2
+    ) {
+      this.markDeprecated(
+        normalised,
+        "auto: failure_count >= 3 and > success_count",
+      );
+    }
+    return true;
   }
 
   /** Total active lessons. */

@@ -180,6 +180,21 @@ describe("conversation-turn helpers", () => {
     expect(render()).toContain("the line after the last one shown as `offset`");
   });
 
+  it("renders a page the model asked for (offset/limit) past the 2000-char preview", () => {
+    const fileLines = Array.from({ length: 200 }, (_, i) => `line ${i + 1} ${"x".repeat(60)}`);
+    const summary = fileLines.join("\n");
+    expect(summary.length).toBeGreaterThan(8000);
+    const prefix = "tool_result[os.fs.read ok]: ";
+    const rendered = renderTurnForPrompt(
+      toolResultTurn({ tool: "os.fs.read", status: "ok", summary, at: 5 }),
+      { readStartLine: 1, readRangeRequested: true },
+    );
+    // The history preview exists to keep old transcripts cheap, not to refuse a
+    // page that was just requested: cutting it at 2000 made paging loop.
+    expect(rendered.length).toBeGreaterThan(prefix.length + 2000);
+    expect(rendered).not.toContain("rendering-truncated");
+    expect(rendered.startsWith(prefix + "line 1 ")).toBe(true);
+  });
   it("falls back to a character cut for an os.fs.read with no usable line break", () => {
     const rendered = renderTurnForPrompt(
       toolResultTurn({
@@ -223,13 +238,14 @@ describe("conversation-turn helpers", () => {
       `tool_result[fusion.delegate ok]: ${summary}`,
     );
     const aged = renderTurnForPrompt(turn, { inCurrentMacroTurn: false });
-    expect(aged).toContain("[rendering-truncated");
+    expect(aged).toContain("chars elided");
     expect(aged.startsWith("tool_result[fusion.delegate ok]: 3 tasks: 3 ok")).toBe(true);
-    // The generic 8000-char cap, not the 400-char history cap of the other
-    // fresh tools.
+    // The generic render cap (16_000), not the 400-char history cap of the
+    // other tools. Track the constant, not a stale literal: it was 8000 until
+    // 2026-10-22.
     expect(aged.length).toBeGreaterThan(6_000);
     expect(aged.length).toBeLessThanOrEqual(
-      "tool_result[fusion.delegate ok]: ".length + 8000,
+      "tool_result[fusion.delegate ok]: ".length + 16_000,
     );
   });
 

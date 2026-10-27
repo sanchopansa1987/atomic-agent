@@ -3,6 +3,7 @@ import {
   classifyHeap,
   createHeapGuard,
   readProcessHeap,
+  suggestHeapCeilingMb,
   HEAP_WARN_RATIO,
   HEAP_CRITICAL_RATIO,
   type HeapReading,
@@ -73,6 +74,24 @@ describe("createHeapGuard", () => {
     expect(guard.check()).toBeNull();
     used = 3.2; // climbs again -> warn again
     expect(guard.check()?.severity).toBe("warn");
+  });
+});
+
+describe("suggestHeapCeilingMb", () => {
+  const GB = 1_073_741_824;
+
+  it("suggests a third of RAM on this 8 GB box, not 8192", () => {
+    expect(suggestHeapCeilingMb(8 * GB)).toBe(2730);
+  });
+
+  it("clamps a big host at 4096 and a small host at 2048", () => {
+    expect(suggestHeapCeilingMb(64 * GB)).toBe(4096);
+    expect(suggestHeapCeilingMb(4 * GB)).toBe(2048);
+  });
+
+  it("puts the suggestion in the crash advice", () => {
+    const s = classifyHeap({ usedBytes: 4 * GB, limitBytes: 4.1 * GB });
+    expect(s.message).toContain(`max-old-space-size=${suggestHeapCeilingMb()}`);
   });
 });
 

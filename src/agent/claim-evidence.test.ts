@@ -3,7 +3,10 @@ import type { ConversationTurn } from "../session/conversation-turn.js";
 import {
   claimHasEvidence,
   detectCheckClaims,
+  formatTruncatedEvidenceNotice,
   formatUnverifiedClaimNotice,
+  formatUnverifiedClaimRefusal,
+  truncatedEvidenceClaims,
   turnToolCalls,
   unverifiedClaims,
 } from "./claim-evidence.js";
@@ -94,5 +97,57 @@ describe("unverifiedClaims / turnToolCalls", () => {
     expect(notice).toContain("`verify.run`");
     expect(notice).toContain("`os.shell.run`");
     expect(notice).toContain("remove the claim");
+  });
+
+  it("treats a truncated result as no evidence and names it separately", () => {
+    // The check ran — but the model only saw an elided fraction of the output.
+    const elided = [{ ...shell("npx vitest run"), truncated: true }];
+    expect(claimHasEvidence({ kind: "tests", text: "tests pass" }, elided)).toBe(false);
+    expect(unverifiedClaims("tests pass", elided)).toHaveLength(1);
+    const truncated = truncatedEvidenceClaims("tests pass", elided);
+    expect(truncated).toEqual([{ kind: "tests", text: "tests pass" }]);
+    expect(formatTruncatedEvidenceNotice(truncated)).toContain("truncated");
+    // Nothing truncated: the claim is simply backed.
+    const whole = [shell("npx vitest run")];
+    expect(truncatedEvidenceClaims("tests pass", whole)).toHaveLength(0);
+    expect(unverifiedClaims("tests pass", whole)).toHaveLength(0);
+  });
+
+  it("marks a call truncated from its own tool_result turn", () => {
+    const turns: ConversationTurn[] = [
+      { kind: "user", text: "check it", at: 1 },
+      { kind: "assistant_tool_call", tool: "os.shell.run", args: { cmd: "npx vitest run" }, at: 2 },
+      { kind: "tool_result", tool: "os.shell.run", status: "ok", summary: "", truncated: true, at: 3 },
+    ];
+    expect(turnToolCalls(turns)).toEqual([
+      { tool: "os.shell.run", args: { cmd: "npx vitest run" }, truncated: true },
+    ]);
+    expect(unverifiedClaims("all tests pass", turnToolCalls(turns))).toHaveLength(1);
+  });
+
+  it("names the call that ran and exited 0 when the claim is refused", () => {
+    const claim = [{ kind: "tests", text: "tests pass" }];
+    const ran = [{ tool: "os.shell.run", args: { cmd: "npx vitest run" }, exitCode: 0 }];
+    const refusal = formatUnverifiedClaimRefusal(claim, ran);
+    expect(refusal).toContain("os.shell.run exit: 0");
+    expect(refusal).toContain('claims "tests pass"');
+  });
+
+  it("keeps today's wording verbatim when nothing ran", () => {
+    const claim = [{ kind: "tests", text: "tests pass" }];
+    const today =
+      'not delivered: the reply claims "tests pass" but no matching check ran this turn. Run the check (`verify.run`, `os.shell.run`) or remove the claim, then reply again.';
+    expect(formatUnverifiedClaimRefusal(claim)).toBe(today);
+    expect(formatUnverifiedClaimRefusal(claim, [])).toBe(today);
+  });
+
+  it("says a truncated verify result is retrievable and names its blob prefix", () => {
+    const claim = [{ kind: "verified", text: "verified" }];
+    const ran = [
+      { tool: "verify.run", args: {}, truncated: true, blob: "abcdef1234567890" },
+    ];
+    const refusal = formatUnverifiedClaimRefusal(claim, ran);
+    expect(refusal).toContain("retrievable");
+    expect(refusal).toContain("tool.recall abcdef12");
   });
 });

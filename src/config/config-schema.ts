@@ -839,6 +839,14 @@ export interface AtomicAgentConfig {
       maxEntries: number;
       deprecationAgeMs: number;
     };
+    /**
+     * Queue #9. Turn-end digest. When `auto` is true, a completed turn
+     * writes a distilled work-item note via `scripts/brain.py digest`.
+     * Default false — nothing writes vault files until the operator opts in.
+     */
+    digest: {
+      auto: boolean;
+    };
     consolidation: {
       enabled: boolean;
       intervalMs: number;
@@ -1967,6 +1975,14 @@ export interface UserConfigFile {
       maxEntries: number;
       deprecationAgeMs: number;
     };
+    /**
+     * Queue #9. Turn-end digest. When `auto` is true, a completed turn
+     * writes a distilled work-item note via `scripts/brain.py digest`.
+     * Default false — nothing writes vault files until the operator opts in.
+     */
+    digest: {
+      auto: boolean;
+    };
     consolidation: {
       enabled: boolean;
       intervalMs: number;
@@ -2833,6 +2849,11 @@ export const USER_CONFIG_DEFAULTS: UserConfigFile = {
       indexLimit: 20,
       maxEntries: 500,
       deprecationAgeMs: 2_592_000_000,
+    },
+    digest: {
+      // Queue #9 — turn-end digest hook. Off by default; the hook writes a
+      // vault note per completed work item only when the operator opts in.
+      auto: false,
     },
     consolidation: {
       // Phase 5 — scoped periodic timer carve-out (like Telegram polling).
@@ -4456,6 +4477,8 @@ export function parseUserConfigFile(raw: unknown): UserConfigFile {
     (memory.lessons as Record<string, unknown> | undefined) ?? {};
   const memoryProcedures =
     (memory.procedures as Record<string, unknown> | undefined) ?? {};
+  const memoryDigest =
+    (memory.digest as Record<string, unknown> | undefined) ?? {};
   const memoryConsolidation =
     (memory.consolidation as Record<string, unknown> | undefined) ?? {};
   const memoryVoting =
@@ -5197,6 +5220,12 @@ export function parseUserConfigFile(raw: unknown): UserConfigFile {
           memoryProcedures.deprecationAgeMs ??
             USER_CONFIG_DEFAULTS.memory.procedures.deprecationAgeMs,
           "memory.procedures.deprecationAgeMs",
+        ),
+      },
+      digest: {
+        auto: parseBool(
+          memoryDigest.auto ?? USER_CONFIG_DEFAULTS.memory.digest.auto,
+          "memory.digest.auto",
         ),
       },
       consolidation: {

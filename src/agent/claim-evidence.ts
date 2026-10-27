@@ -36,6 +36,16 @@ export interface CheckClaim {
 export interface TurnToolCall {
   tool: string;
   args: Record<string, unknown>;
+  /**
+   * The call's own result was elided before the model saw it. A truncated
+   * result cannot stand as evidence: the model quoted, checked or summarised
+   * a fraction of the output and cannot know what the rest said.
+   */
+  truncated?: boolean;
+  /** Exit code of a shell call's result, when the transcript carried it. */
+  exitCode?: number;
+  /** Blob hash of a truncated result, so the full body can be re-read. */
+  blob?: string;
 }
 
 const CLAIM_PATTERNS: ReadonlyArray<{ kind: CheckClaimKind; re: RegExp }> = [
@@ -92,7 +102,29 @@ export function claimHasEvidence(
   claim: CheckClaim,
   calls: readonly TurnToolCall[],
 ): boolean {
+  return hasEvidence(claim, calls, { includeTruncated: false });
+}
+
+/**
+ * The same check, but counting elided calls. Used only to tell "nothing ran"
+ * apart from "it ran and the output was cut" — never to accept a claim.
+ */
+function claimHasEvidenceIncludingTruncated(
+  claim: CheckClaim,
+  calls: readonly TurnToolCall[],
+): boolean {
+  return hasEvidence(claim, calls, { includeTruncated: true });
+}
+
+function hasEvidence(
+  claim: CheckClaim,
+  calls: readonly TurnToolCall[],
+  options: { includeTruncated: boolean },
+): boolean {
   for (const call of calls) {
+    // A truncated result cannot stand as evidence: the model saw a fraction of
+    // the output, so "tests pass" from an elided run is a guess with a receipt.
+    if (call.truncated === true && !options.includeTruncated) continue;
     if (call.tool.startsWith("verify.")) return true;
     const line = shellCommandLine(call);
     if (line !== null && EVIDENCE[claim.kind].test(line)) return true;
@@ -108,6 +140,33 @@ export function unverifiedClaims(
   return detectCheckClaims(replyText).filter(
     (claim) => !claimHasEvidence(claim, calls),
   );
+}
+
+/**
+ * Claims that only pass because of a truncated call.
+ *
+ * `unverifiedClaims` already refuses them, but "no evidence" is the wrong thing
+ * to tell the model: the check did run, it was just elided before it was read.
+ * These earn a different notice — re-read/re-run so the whole output is seen.
+ */
+export function truncatedEvidenceClaims(
+  replyText: string,
+  calls: readonly TurnToolCall[],
+): CheckClaim[] {
+  if (!calls.some((call) => call.truncated === true)) return [];
+  const complete = calls.filter((call) => call.truncated !== true);
+  return detectCheckClaims(replyText).filter(
+    (claim) =>
+      claimHasEvidenceIncludingTruncated(claim, calls) &&
+      !claimHasEvidence(claim, complete),
+  );
+}
+
+/** Notice for a claim whose only evidence arrived elided. */
+export function formatTruncatedEvidenceNotice(
+  claims: readonly CheckClaim[],
+): string {
+  return `Your reply claims ${quoteClaims(claims)} and the only matching output this turn was truncated before you read it. Re-run the check with a narrower scope (or read the file in ranges) so the evidence is complete, then reply again.`;
 }
 
 /**
@@ -127,9 +186,25 @@ export function turnToolCalls(
     }
   }
   const calls: TurnToolCall[] = [];
+  // Calls are matched to their results in order, by tool name: the transcript
+  // writes assistant_tool_call → tool_result per call, and a truncated result
+  // tags the call it belongs to.
+  const pending: TurnToolCall[] = [];
   for (const turn of turns.slice(start)) {
     if (turn.kind === "assistant_tool_call") {
-      calls.push({ tool: turn.tool, args: turn.args });
+      const call: TurnToolCall = { tool: turn.tool, args: turn.args };
+      calls.push(call);
+      pending.push(call);
+    } else if (turn.kind === "tool_result") {
+      const idx = pending.findIndex((call) => call.tool === turn.tool);
+      if (idx === -1) continue;
+      if (turn.truncated === true) pending[idx]!.truncated = true;
+      if (turn.blob !== undefined) pending[idx]!.blob = turn.blob;
+      // Shell results render their exit code in the summary ("exit: 0"); keep
+      // it so the refusal can say *why* a check that ran did not back the claim.
+      const exit = /exit:\s*(-?\d+)/i.exec(turn.summary);
+      if (exit !== null) pending[idx]!.exitCode = Number(exit[1]);
+      pending.splice(idx, 1);
     }
   }
   return calls;
@@ -139,21 +214,44 @@ function quoteClaims(claims: readonly CheckClaim[]): string {
   return claims.map((claim) => `"${claim.text}"`).join(", ");
 }
 
+/** One line naming a call and its outcome, so the model can see what ran. */
+function describeRanCall(call: TurnToolCall): string {
+  if (call.truncated === true) {
+    const prefix = call.blob !== undefined ? call.blob.slice(0, 8) : "";
+    return `${call.tool} truncated — body retrievable via tool.recall ${prefix}`;
+  }
+  if (call.exitCode !== undefined) {
+    return `${call.tool} exit: ${call.exitCode}`;
+  }
+  return `${call.tool} ok`;
+}
+
 /**
- * The next-step notice. Names the claim as written, says nothing ran,
- * and names both exits — the two tools that produce evidence, and
- * dropping the claim — so the model does not answer with the same
- * sentence rephrased.
+ * The next-step notice. Names the claim as written, names both exits (the two
+ * tools that produce evidence, and dropping the claim) — and, when the caller
+ * passes the calls that actually ran this turn, names them too so the model
+ * can see which check already happened and why it did not satisfy the claim.
+ * With no `ran` list the wording is unchanged from the original.
  */
 export function formatUnverifiedClaimNotice(
   claims: readonly CheckClaim[],
+  ran?: readonly TurnToolCall[],
 ): string {
-  return `Your reply claims ${quoteClaims(claims)} but no such check ran this turn. Run it (\`verify.run\`, \`os.shell.run\`) or remove the claim, then reply again.`;
+  if (ran === undefined || ran.length === 0) {
+    return `Your reply claims ${quoteClaims(claims)} but no such check ran this turn. Run it (\`verify.run\`, \`os.shell.run\`) or remove the claim, then reply again.`;
+  }
+  const list = ran.map(describeRanCall).join(", ");
+  return `Your reply claims ${quoteClaims(claims)} but no matching check ran this turn — what ran: ${list}. Run the check or remove the claim, then reply again.`;
 }
 
 /** The tool result that stands in for the reply that was not delivered. */
 export function formatUnverifiedClaimRefusal(
   claims: readonly CheckClaim[],
+  ran?: readonly TurnToolCall[],
 ): string {
-  return `not delivered: the reply claims ${quoteClaims(claims)} but no matching check ran this turn. Run the check (\`verify.run\`, \`os.shell.run\`) or remove the claim, then reply again.`;
+  if (ran === undefined || ran.length === 0) {
+    return `not delivered: the reply claims ${quoteClaims(claims)} but no matching check ran this turn. Run the check (\`verify.run\`, \`os.shell.run\`) or remove the claim, then reply again.`;
+  }
+  const list = ran.map(describeRanCall).join(", ");
+  return `not delivered: the reply claims ${quoteClaims(claims)} but no matching check ran this turn — what ran: ${list}. Run the check or remove the claim, then reply again.`;
 }

@@ -499,6 +499,9 @@ export function loadConfig(): AtomicAgentConfig {
         maxEntries: user.memory.procedures.maxEntries,
         deprecationAgeMs: user.memory.procedures.deprecationAgeMs,
       },
+      digest: {
+        auto: user.memory.digest.auto,
+      },
       consolidation: {
         enabled: user.memory.consolidation.enabled,
         intervalMs: user.memory.consolidation.intervalMs,

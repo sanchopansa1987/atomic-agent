@@ -35,14 +35,20 @@ export interface SearchHttpRequest {
   body?: string;
   timeoutMs: number;
   cwd: string;
-  signal: AbortSignal;
+  /**
+   * Cancels the request. Optional because a search issued outside a turn
+   * has no turn signal to hand down; the retry ladder must not deref a
+   * missing one (`defaultSleep` treated it as always present and crashed
+   * with "reading 'aborted'" the first time an Exa 429 was retried).
+   */
+  signal?: AbortSignal;
   maxResponseBytes?: number;
   runCommand?: typeof defaultRunCommand;
   lookup?: HostLookup;
   /** Overrides the 429 retry schedule; `maxRetries: 0` disables retrying. */
   retryPolicy?: SearchRetryPolicy;
   /** Injectable sleep so tests do not spend real wall-clock in backoff. */
-  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Injectable clock for deterministic `Retry-After` HTTP-date parsing. */
   now?: () => number;
 }
@@ -180,16 +186,16 @@ async function sendOnce(
  * pending timer is cleared and the wait resolves immediately so the caller
  * observes the abort on its next checkpoint.
  */
-function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
-  if (ms <= 0 || signal.aborted) return Promise.resolve();
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal?.aborted) return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(finish, ms);
     function finish(): void {
       clearTimeout(timer);
-      signal.removeEventListener("abort", finish);
+      signal?.removeEventListener("abort", finish);
       resolve();
     }
-    signal.addEventListener("abort", finish, { once: true });
+    signal?.addEventListener("abort", finish, { once: true });
   });
 }
 

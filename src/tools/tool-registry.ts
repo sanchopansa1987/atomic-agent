@@ -112,10 +112,21 @@ export class ToolRegistry {
       return result;
     }
     const body = rawOutput ?? result.summary;
-    if (body.length <= BLOB_OUTPUT_THRESHOLD_CHARS) return result;
+    // Store whenever ANYTHING was dropped, not only above 8 000 chars: a
+    // truncated result whose middle was elided below that threshold used to be
+    // unrecoverable — the marker said "N lines elided" and no blob existed.
+    if (body.length <= BLOB_OUTPUT_THRESHOLD_CHARS && !result.truncated) return result;
     try {
       return { ...result, blob: await this.blobStore.put(body) };
     } catch {
+      // A truncated body that could not be stored IS data loss: the reader would
+      // see a marker with nothing behind it. Fail the call on the spot instead of
+      // letting the turn continue on text nobody can read.
+      if (result.truncated) {
+        throw new Error(
+          `truncated output from ${name} could not be stored — refusing to continue on unseen output`,
+        );
+      }
       // The tool already ran: a storage failure must not turn it into a
       // failed action that the agent may repeat, or advertise a missing blob.
       return {

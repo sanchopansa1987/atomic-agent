@@ -1,5 +1,9 @@
-const DIFF_MAX_LINES = 40;
-const PREVIEW_MAX_LEN = 800;
+const DIFF_MAX_LINES = 200;
+// ponytail: 6000 clipped a full 200-line diff (~12k chars, ~60 chars/line) —
+// the tail, which is where the changed hunk lands, was the part lost. 14_000
+// covers DIFF_MAX_LINES at a generous line length. Ceiling: if diffs grow past
+// that, cap by lines here rather than by chars.
+const PREVIEW_MAX_LEN = 14_000;
 
 /**
  * Minimal unified diff, capped at DIFF_MAX_LINES total lines. We avoid a
@@ -50,8 +54,11 @@ export function renderUnifiedDiff(
     segments.push(` ${beforeLines[i]}`);
   }
   if (segments.length > DIFF_MAX_LINES + 2) {
+    const shown = DIFF_MAX_LINES + 2;
+    const dropped = segments.length - shown;
     return (
-      segments.slice(0, DIFF_MAX_LINES + 2).join("\n") + "\n… [diff truncated]"
+      segments.slice(0, shown).join("\n") +
+      `\n… [diff truncated: ${dropped} more lines — raise DIFF_MAX_LINES or read the file]`
     );
   }
   return segments.join("\n");

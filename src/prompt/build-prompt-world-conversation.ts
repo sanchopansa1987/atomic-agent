@@ -4,6 +4,7 @@ import type { SessionState } from "../session/session-state.js";
 import {
   findCurrentMacroTurnStart,
   readStartLineOf,
+  hasExplicitReadRange,
   renderToolResultBody,
   renderTurnForPrompt,
   type ConversationTurn,
@@ -106,6 +107,7 @@ function* packedTurnRenderOptions(
   // call order (a batch may list several calls before their results), so a
   // read cut at render time can name the `offset` of the rest.
   let pendingReadStarts: (number | undefined)[] = [];
+  let pendingReadRanges: boolean[] = [];
   let pendingReadKeys: string[] = [];
   // Dedup: content-hash -> index of first turn in this prompt that carried
   // that result. A repeat (same tool + status + identical summary) renders
@@ -120,14 +122,18 @@ function* packedTurnRenderOptions(
     let readKey: string | undefined;
     if (turn.kind === "user" || turn.kind === "assistant_reply") {
       pendingReadStarts = [];
+      pendingReadRanges = [];
       pendingReadKeys = [];
     } else if (turn.kind === "assistant_tool_call" && turn.tool === "os.fs.read") {
       pendingReadStarts.push(readStartLineOf(turn.args));
+      pendingReadRanges.push(hasExplicitReadRange(turn.args));
       pendingReadKeys.push(JSON.stringify(turn.args));
     } else if (turn.kind === "tool_result" && turn.tool === "os.fs.read") {
       const readStartLine = pendingReadStarts.shift();
+      const readRanged = pendingReadRanges.shift();
       readKey = pendingReadKeys.shift();
       if (readStartLine !== undefined) options.readStartLine = readStartLine;
+      if (readRanged === true) options.readRangeRequested = true;
     }
     if (turn.kind === "tool_result" && (!inCurrentMacroTurn ||
       (turn.tool === "os.fs.read" && turn.status === "ok" && readKey !== undefined))) {

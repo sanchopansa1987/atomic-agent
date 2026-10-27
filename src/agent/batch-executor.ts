@@ -901,16 +901,22 @@ function runSyncLoopGate(
         : wanderingEscalated && verdict.detector === "wandering"
           ? "wandering"
           : verdict.detector;
-    const vetoResult = compressToolResult({
+    // A veto body is an instruction the model must act on, not a log tail:
+    // routing it through the compressor at the default 400-char budget elided
+    // the middle of it — including the search-first alternative — so the
+    // refusal lost the way forward. The other veto paths in this file
+    // (tool filter, plan mode) already return a literal; same shape here.
+    const vetoResult: CompressedToolResult = {
       tool,
       status: "error",
-      output: formatVetoInstruction({ tool, count, target, detector }),
+      summary: formatVetoInstruction({ tool, count, target, detector }),
       details: {
         deniedReason: LOOP_VETO_DENIED_REASON,
         loopCount: count,
         detector,
       },
-    });
+      truncated: false,
+    };
     ctx.tracker.recordOutcome(tool, args, vetoResult);
     loopSignals.push({
       kind: forceBreaker ? "breaker" : "critical",

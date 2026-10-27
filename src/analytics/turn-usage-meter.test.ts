@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import type { CompletionUsage } from "../llm/provider/completion-types.js";
 import type { ResolvedModel } from "../llm/provider/model-resolver.js";
-import { TurnUsageMeter } from "./turn-usage-meter.js";
+import {
+  TurnUsageMeter,
+  accumulateSessionUsage,
+  foldUsage,
+  formatSessionUsage,
+} from "./turn-usage-meter.js";
 
 const S = "session-a";
 
@@ -241,5 +246,38 @@ describe("TurnUsageMeter — cached prompt tokens", () => {
     meter.begin(S);
     meter.record({ sessionId: S, usage: usage(10, 5), model: pricedModel(3, 15) });
     expect(meter.snapshot(S)).not.toHaveProperty("cachedTokens");
+  });
+
+  it("folds a turn snapshot into the session's cumulative totals", () => {
+    const first = foldUsage(undefined, { promptTokens: 100, completionTokens: 50 });
+    expect(first).toEqual({ turns: 1, promptTokens: 100, completionTokens: 50 });
+    const second = foldUsage(first, {
+      promptTokens: 30,
+      completionTokens: 20,
+      costUsd: 0.01,
+    });
+    expect(second).toEqual({
+      turns: 2,
+      promptTokens: 130,
+      completionTokens: 70,
+      costUsd: 0.01,
+    });
+    expect(formatSessionUsage(second)).toBe(
+      "turns=2 prompt=130 completion=70 est_cost=$0.0100",
+    );
+  });
+
+  it("persists the cumulative totals under metadata.usage", () => {
+    const state = { id: S, metadata: {} } as {
+      id: string;
+      metadata: Record<string, unknown>;
+    };
+    const once = accumulateSessionUsage(state, { promptTokens: 40, completionTokens: 10 });
+    expect(once.metadata.usage).toEqual({ turns: 1, promptTokens: 40, completionTokens: 10 });
+    const twice = accumulateSessionUsage(once, { promptTokens: 60, completionTokens: 5 });
+    expect(twice.metadata.usage).toEqual({ turns: 2, promptTokens: 100, completionTokens: 15 });
+    expect(formatSessionUsage(twice.metadata.usage as never)).toBe(
+      "turns=2 prompt=100 completion=15 est_cost=unpriced",
+    );
   });
 });

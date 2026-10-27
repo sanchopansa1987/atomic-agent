@@ -5032,6 +5032,29 @@ describe("claims need evidence (F9b)", () => {
     expect(outcome.terminal).toBe("turn");
     expect(outcome.toolResults[0]!.details).not.toHaveProperty("unverifiedClaims");
   });
+
+  it("persists unverified claims onto the stored reply turn, absent when there are none", async () => {
+    // Delivered-but-unverified: the second reply ships, and the stored turn
+    // carries the flag so a later reader (eval/audit/resume) can see it.
+    const delivered = await run(CLAIM, { noticed: true });
+    expect(delivered.outcome.terminal).toBe("turn");
+    const replyTurn = delivered.outcome.nextSession.turns
+      .slice()
+      .reverse()
+      .find((t) => t.kind === "assistant_reply");
+    expect(replyTurn).toMatchObject({ unverifiedClaims: ["node --check"] });
+
+    // No claim: the field is absent, not an empty array.
+    const clean = await run(
+      JSON.stringify([{ tool: "reply", args: { text: "done" } }]),
+    );
+    const cleanTurn = clean.outcome.nextSession.turns
+      .slice()
+      .reverse()
+      .find((t) => t.kind === "assistant_reply");
+    expect(cleanTurn).toBeDefined();
+    expect(cleanTurn).not.toHaveProperty("unverifiedClaims");
+  });
 });
 
 describe("the operator's request reaches the prompt (F22)", () => {
@@ -5201,7 +5224,8 @@ describe("executeStep — server chat template parts (F31)", () => {
     const chat = params.chat as { system: string; user: string; prefixHash: string };
     expect(chat).toBeDefined();
     expect(chat.system.startsWith("### system")).toBe(true);
-    expect(chat.user).toContain("### respond");
+    expect(chat.user).toContain("### conversation");
+    expect(chat.user).not.toContain("Respond now.");
     expect(chat.prefixHash).toMatch(/^[0-9a-f]+$/);
     // The raw text still travels for a link that cannot render.
     expect(params.prompt).toBe(`${chat.system}\n${chat.user}`);

@@ -49,6 +49,25 @@ describe("tool output storage", () => {
     expect(results[0]!.blob).not.toBe(results[1]!.blob);
   });
 
+  it("stores a truncated result even under the 8k threshold, so the elided middle is recallable", async () => {
+    const registry = new ToolRegistry(store);
+    const body = Array.from({ length: 120 }, (_, i) => `row ${i} ${"y".repeat(30)}`).join("\n");
+    registry.register({
+      name: "probe_small", description: "fixture", readonly: true,
+      async run() {
+        return compressToolResult({ tool: "probe_small", status: "ok", output: body });
+      },
+    });
+    const result = await registry.invoke("probe_small", {}, ctx);
+    expect(body.length).toBeLessThan(8_000);
+    expect(result.truncated).toBe(true);
+    expect(result.summary).toContain("elided");
+    // Before this, a result this size was elided with no blob: the marker was a
+    // dead end. A stored blob is what turns it into a tool.recall pointer.
+    expect(result.blob).toBeTruthy();
+    expect(await store.get(result.blob!)).toBe(body);
+  });
+
   it("stores large direct summaries and leaves short and terminal results alone", async () => {
     const registry = new ToolRegistry(store);
     const put = vi.spyOn(store, "put");
@@ -72,15 +91,31 @@ describe("tool output storage", () => {
     expect(put).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the tool outcome when blob storage fails and advertises no false reference", async () => {
+  it("refuses the call when a truncated body cannot be stored — never continues on unseen output", async () => {
     vi.spyOn(store, "put").mockRejectedValue(new Error("disk full"));
     const registry = new ToolRegistry(store);
     const output = "value".repeat(2000);
     const result = compressToolResult({ tool: "probe", status: "ok", output, details: { savedFile: true } });
+    expect(result.truncated).toBe(true);
     registry.register({ name: "probe", description: "fixture", readonly: false, run: async () => result });
-    const actual = await registry.invoke("probe", {}, ctx);
+    // Truncated + unstorable = the marker would point at nothing. Failing loudly
+    // is the contract now; the old behaviour returned a summary whose middle was
+    // gone with no blob and no error.
+    await expect(registry.invoke("probe", {}, ctx)).rejects.toThrow(/refusing to continue on unseen output/);
+  });
+
+  it("keeps a NON-truncated outcome when blob storage fails", async () => {
+    vi.spyOn(store, "put").mockRejectedValue(new Error("disk full"));
+    const registry = new ToolRegistry(store);
+    const body = "z".repeat(9_000);
+    registry.register({
+      name: "probe2", description: "fixture", readonly: false,
+      async run() {
+        return { tool: "probe2", status: "ok", summary: body, details: { savedFile: true }, truncated: false };
+      },
+    });
+    const actual = await registry.invoke("probe2", {}, ctx);
     expect(actual.status).toBe("ok");
-    expect(actual.summary).toBe(result.summary);
     expect(actual.blob).toBeUndefined();
     expect(actual.details).toMatchObject({ savedFile: true, blobStoreError: expect.any(String) });
   });

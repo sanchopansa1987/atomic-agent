@@ -192,7 +192,8 @@ export const CONVERSATION_CAP_AUTO_FALLBACK = 32_000;
  * a given prompt-build. When the runtime knows the model's physical
  * `contextWindow` (from `llama-server /props`), clamp the user-chosen
  * `configuredCap` to the space that remains after all fixed costs.
- * When `contextWindow` is unknown, trust the user's config as-is.
+ * When `contextWindow` is unknown, `configuredCap` is a whole-request
+ * budget, so the fixed costs come off it exactly the same way.
  *
  * Under `autoFill` there is no configured ceiling at all: whatever the
  * window leaves over is the cap. `configuredCap` is still read in that

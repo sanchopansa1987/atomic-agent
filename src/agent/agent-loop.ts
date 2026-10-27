@@ -3,6 +3,13 @@ import {
   recordDelegation,
   wouldRefuse as fusionGateWouldRefuse,
 } from "./fusion-orchestrator-mode.js";
+import { join } from "node:path";
+import { recallGraphSection } from "../memory/graph-recall.js";
+import {
+  appendTurnQualityRow,
+  computeTurnQuality,
+  turnQualityPath,
+} from "./turn-quality.js";
 import {
   createReviewStallState,
   observeReviewStep,
@@ -329,6 +336,8 @@ export interface AgentLoopDependencies {
    * Pinned by `agent-loop-lesson-lifecycle.test.ts`.
    */
   lessonLifecycle?: LessonLifecycleHook;
+  /** Queue #9 — turn-end digest hook. Absent → no digest is written. */
+  digest?: DigestHook;
   onEvent?: (event: AgentLoopEvent) => void;
   /**
    * Out-of-band channel for user messages that arrive while this turn is
@@ -432,6 +441,27 @@ export interface LessonLifecycleHook {
     surfacedLessonIds: readonly number[];
     outcome: LessonLifecycleOutcome;
   }): void;
+}
+
+/**
+ * Queue #9. A completed work item, distilled to one paragraph (what landed +
+ * what is verified). Fed to {@link DigestHook} at the same turn-end seam that
+ * bumps lessons; the body is the final reply, never the transcript.
+ */
+export interface DigestWorkItem {
+  sessionId: string;
+  title: string;
+  body: string;
+  tags: readonly string[];
+}
+
+/**
+ * Queue #9. Writes one digest per completed work item, without being asked.
+ * Implementations must be fire-safe: the loop swallows a throw so a digest
+ * failure never derails the return path.
+ */
+export interface DigestHook {
+  recordWorkItem(item: DigestWorkItem): void;
 }
 
 /**
@@ -976,8 +1006,24 @@ export class AgentLoop {
     options: RunTurnOptions,
   ): Promise<RunTurnResult> {
     this.deps.steeringInbox?.open(session.id);
+    const turnStartTurns = session.turns.length;
     try {
-      return await this.runTurnInner(session, options);
+      const result = await this.runTurnInner(session, options);
+      // Harness S6: one turn-quality row per turn, appended best-effort — a
+      // failed log write must never fail the turn it is describing.
+      try {
+        const turns = result.session.turns.slice(turnStartTurns);
+        appendTurnQualityRow(
+          turnQualityPath(result.session.workingDir),
+          computeTurnQuality(turns, result.stepCount),
+        );
+      } catch (err) {
+        this.deps.logger?.warn("turn-quality row append failed", {
+          sessionId: session.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return result;
     } finally {
       // Every ordinary exit already closed the window through
       // `flushSteering` — a `return` expression is evaluated before
@@ -1034,6 +1080,39 @@ export class AgentLoop {
       this.deps.onEvent?.({ type: "user_message", text });
     }
 
+    // Resume path for a context-budget stop. The budget block persists
+    // `continuationHandoff` and the closing reply tells the operator the
+    // work is saved and resumable — but writing it was the whole contract.
+    // Nothing read it back, so a "saved" handoff was a note no prompt ever
+    // saw. Inject it as the first turn of the next run, then stamp it
+    // consumed so resuming twice does not replay the same handoff.
+    const pendingHandoff = state.metadata?.continuationHandoff;
+    const handoffAt = Number(state.metadata?.continuationHandoffAt ?? 0);
+    const handoffConsumedAt = Number(
+      state.metadata?.continuationHandoffConsumedAt ?? 0,
+    );
+    if (
+      typeof pendingHandoff === "string" &&
+      pendingHandoff.trim() !== "" &&
+      handoffConsumedAt < handoffAt
+    ) {
+      state = recordTurn(
+        state,
+        userTurn(`[resuming prior turn]\n\n${pendingHandoff}`),
+      );
+      state = {
+        ...state,
+        metadata: {
+          ...state.metadata,
+          continuationHandoffConsumedAt: handoffAt,
+        },
+      };
+      this.deps.logger?.info?.(
+        "injected continuation handoff from a budget-stopped turn",
+        { sessionId: state.id, chars: pendingHandoff.length },
+      );
+    }
+
     const turnIndex = state.turnCount;
     this.deps.onEvent?.({ type: "turn_started", turnIndex });
     const turnStartedAt = Date.now();
@@ -1052,6 +1131,7 @@ export class AgentLoop {
       this.deps.toolDescriptors;
 
     state = await refreshMemoryContext(this.deps, state, options);
+    state = await resolveGraphSection(state);
 
     // Proactively sync with the live `llama-server` before the first
     // step. Catches the case where the operator swapped the model
@@ -1386,6 +1466,16 @@ export class AgentLoop {
         });
       }
       let noticeForThisStep = pendingNotice;
+      // A budget that bites before the wall. Previously the step ceiling was only
+      // observable after the fact (the audit's `steps 218`), so a run could drift
+      // into the ceiling without ever being told. Inside the last 20% of the task
+      // ceiling, the model is told exactly how many steps remain and what to do.
+      const stepsLeft = stepCeiling - i;
+      if (stepsLeft > 0 && stepsLeft <= Math.max(2, Math.ceil(stepCeiling * 0.2))) {
+        const budgetNote = `Step budget: ${stepsLeft} of ${stepCeiling} steps left in this task. Finish the current item or write the handoff now — do not start anything new.`;
+        noticeForThisStep =
+          noticeForThisStep === undefined ? budgetNote : `${noticeForThisStep}\n\n${budgetNote}`;
+      }
       pendingNotice = undefined;
       // On the final allowed step only the two terminal tools may run, so
       // a long coding session ends with a summary of what was changed
@@ -1741,6 +1831,8 @@ export class AgentLoop {
           pendingNotice = outcome.trimmedBatchNotice;
         } else if (outcome.waveSplitNotice !== undefined) {
           pendingNotice = outcome.waveSplitNotice;
+        } else if (outcome.failureLessonNotice !== undefined) {
+          pendingNotice = outcome.failureLessonNotice;
         }
 
         // The synchronous batch gate (inside `executeStep`) already
@@ -2552,6 +2644,8 @@ export class AgentLoop {
     // before its early `return`.
     if (!options.ephemeral && (reason === "reply" || reason === "finish")) {
       invokeLessonLifecycle(this.deps, state.id, surfacedLessonIds, "success");
+      // Queue #9 — write the turn digest at the same completed-work seam.
+      invokeDigestHook(this.deps, state, options);
     }
 
     // Fire async memory reflection. Never awaited — the runner
@@ -2744,12 +2838,71 @@ function invokeLessonLifecycle(
   }
 }
 
+/**
+ * Queue #9 — write the turn digest once per completed work item. The body is
+ * the final reply (the distilled one-paragraph work item), never the transcript.
+ * Fire-safe: a throw is logged and swallowed so the digest never derails the
+ * return path. Absent when no digest hook is wired (`memory.digest.auto` off).
+ */
+function invokeDigestHook(
+  deps: AgentLoopDependencies,
+  state: SessionState,
+  options: RunTurnOptions,
+): void {
+  const hook = deps.digest;
+  if (!hook) return;
+  const body = findLastAssistantReply(state);
+  if (body === null || body.trim().length === 0) return;
+  const title = digestTitle(state, options);
+  if (title.length === 0) return;
+  try {
+    hook.recordWorkItem({
+      sessionId: state.id,
+      title,
+      body,
+      tags: [],
+    });
+  } catch (err) {
+    deps.logger?.warn?.("digest hook failed", {
+      sessionId: state.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** A short digest title: the operator's request, else the first user turn. */
+function digestTitle(state: SessionState, options: RunTurnOptions): string {
+  const fromOptions = options.userMessage?.trim();
+  if (fromOptions) return fromOptions.slice(0, 120);
+  for (const turn of state.turns) {
+    if (turn.kind === "user") return turn.text.trim().slice(0, 120);
+  }
+  return "";
+}
+
 function findLastAssistantReply(state: SessionState): string | null {
   for (let i = state.turns.length - 1; i >= 0; i -= 1) {
     const turn = state.turns[i];
     if (isFinalReplyTurn(turn)) return turn.text;
   }
   return null;
+}
+
+/**
+ * Harness S2. Resolve the `### graph` block once per turn and cache it on the
+ * session so no step re-shells. The script path is `BRAIN_GRAPH_SCRIPT` when set,
+ * else `<workingDir>/scripts/brain_graph.py`. A missing/slow/empty read degrades
+ * to `null` (no block, no error surfaced).
+ */
+async function resolveGraphSection(
+  state: SessionState,
+): Promise<SessionState> {
+  if (state.graphSection !== undefined) return state;   // already resolved this turn
+  const scriptPath =
+    process.env.BRAIN_GRAPH_SCRIPT ??
+    join(state.workingDir, "scripts", "brain_graph.py");
+  const body = await recallGraphSection(scriptPath);
+  return { ...state, graphSection: body };
 }
 
 async function refreshMemoryContext(

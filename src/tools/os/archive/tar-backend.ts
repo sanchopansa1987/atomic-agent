@@ -4,7 +4,8 @@ import { dirname } from "node:path";
 import { Readable } from "node:stream";
 import { createGunzip } from "node:zlib";
 import { extract as tarExtractStream } from "tar-stream";
-import type { Entry as TarEntry, Headers as TarHeaders } from "tar-stream";
+import type { ExtractEvents, Header as TarHeaders } from "tar-stream";
+type TarEntry = ExtractEvents["entry"][1];
 import type {
   ArchiveBackend,
   ArchiveEntry,

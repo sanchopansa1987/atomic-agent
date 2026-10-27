@@ -1,4 +1,8 @@
 import { estimateTokens } from "../prompt/token-budget.js";
+import {
+  TOOL_RESULT_KEEP_PATTERN,
+  compressToolResult,
+} from "../compressor/result-compressor.js";
 
 /**
  * A single entry in the chat transcript. We use the every-step layout:
@@ -40,6 +44,13 @@ export type ConversationTurn =
        * macro-turn the way a sole `reply` does (`agent/progress-note-reply.ts`).
        */
       progressNote?: true;
+      /**
+       * Checks this reply claimed to have run ("tests pass", "verified")
+       * with no matching tool call this turn. Persisted so a later reader
+       * (eval/audit/resume) can see the reply was never backed. Absent when
+       * the reply made no such claim.
+       */
+      unverifiedClaims?: string[];
       at: number;
     };
 
@@ -113,6 +124,7 @@ export function assistantReplyTurn(
         reasoning?: string;
         attachments?: readonly string[];
         progressNote?: boolean;
+        unverifiedClaims?: string[];
       } = {},
 ): ConversationTurn {
   const options =
@@ -128,6 +140,9 @@ export function assistantReplyTurn(
   if (options.progressNote === true) {
     turn = { ...turn, progressNote: true };
   }
+  if (options.unverifiedClaims !== undefined && options.unverifiedClaims.length > 0) {
+    turn = { ...turn, unverifiedClaims: [...options.unverifiedClaims] };
+  }
   return turn;
 }
 
@@ -141,8 +156,14 @@ export function assistantReplyTurn(
  * that produced it (up to this cap), and retains structured metadata on
  * `details`. Concrete value: ~1000 tokens, which covers 3-4 PDF pages or
  * a short code file and matches the `maxTailLines` budget most tools use.
+ *
+ * ponytail: raised 8000 → 16_000 (2026-10-22) because a wrapped 90-line
+ * markdown doc renders as ~41 lines at 8000 and the operator/agent then
+ * re-reads with offset — the same cut re-rendered. Cost is paid once, on the
+ * producing turn; history still drops to READ_HISTORY_CAP_CHARS. Ceiling: if
+ * reads keep needing a second call, make the cap line-based, not char-based.
  */
-const TOOL_RESULT_RENDER_CAP_CHARS = 8000;
+const TOOL_RESULT_RENDER_CAP_CHARS = 16_000;
 const GOG_TOOL_RESULT_RENDER_CAP_CHARS = 16_000;
 
 /**
@@ -160,6 +181,27 @@ const GOG_TOOL_RESULT_RENDER_CAP_CHARS = 16_000;
  */
 const TOOLS_FULL_BODY_WHEN_FRESH: ReadonlySet<string> = new Set([
   "os.http.request",
+  // A clipped diff hides the very lines being verified — capSummary head-slices
+  // and the tail is where the changed hunk usually sits (measured 2026-10-21:
+  // edit results came back as "…[omitted 29 lines]…(truncated)"). Whole on the
+  // step that produced them, history cap after, same rule as http bodies.
+  "os.fs.edit",
+  "os.fs.diff",
+  "os.fs.patch",
+]);
+
+/**
+ * Tools whose output may be compressed with the keep-pattern (head + every
+ * failure line + tail). Everything else gets the plain cap. Measured 2026-10-20:
+ * compressing an `os.fs.grep` of source code kept 2 of 19 lines and ate the code
+ * the caller needed — structured content must not be treated as a log. An
+ * allow-set also means a new tool is never mangled by default.
+ */
+const KEEP_PATTERN_TOOLS: ReadonlySet<string> = new Set([
+  "os.shell.run",
+  "verify.run",
+  "verify.syntax",
+  "fusion.delegate",
 ]);
 
 /**
@@ -193,6 +235,15 @@ export interface RenderTurnOptions {
    * or the call is out of view), and the hint then carries no number.
    */
   readStartLine?: number;
+  /**
+   * `true` when the read call carried an explicit `offset`/`limit` — the model
+   * asked for that page, so it renders under the fresh cap rather than the
+   * 2000-char history preview. Capping a *requested* page at 2000 chars made
+   * paging loop: every page was cut at the same width, so a 400-line file took
+   * ten near-identical reads to traverse and the model never saw the region it
+   * had just asked for.
+   */
+  readRangeRequested?: boolean;
 }
 
 /**
@@ -250,12 +301,17 @@ export function renderToolResultBody(
   return renderToolResultPreview(turn, options);
 }
 
+/**
+ * A duplicate keeps NO body — that is the point of the dedup, and a test pins it.
+ * What it gains is identity: naming the tool makes a repeat recognisable without
+ * re-running it, which is what made identical results read as "no output".
+ */
 function renderToolResultPreview(
   turn: Extract<ConversationTurn, { kind: "tool_result" }>,
   options: RenderTurnOptions,
 ): string {
   if (options.duplicateOfTurnIndex !== undefined) {
-    return `[duplicate tool-result-v1: content already present at turn ${options.duplicateOfTurnIndex}]`;
+    return `[duplicate tool-result-v1: ${turn.tool} — content already present at turn ${options.duplicateOfTurnIndex}]`;
   }
   if (isFreshGogShellResult(turn, options)) {
     return capSummary(turn.summary, GOG_TOOL_RESULT_RENDER_CAP_CHARS);
@@ -274,12 +330,28 @@ function renderToolResultPreview(
   }
   // Fresh reads render up to TOOL_RESULT_RENDER_CAP_CHARS so the model can act on what it just read. Once the macro-turn closes, the read drops to READ_HISTORY_CAP_CHARS — a preview with capReadSummary's paging hint retained, so the model knows how to page if it needs more.
   if (turn.tool === "os.fs.read" || turn.tool === "os.fs.read_document") {
-    const cap = options.inCurrentMacroTurn === true
+    // A page the model explicitly asked for (offset/limit) renders under the
+    // fresh cap: the history preview exists to keep old transcripts cheap, not
+    // to refuse the page that was just requested.
+    const cap = options.inCurrentMacroTurn === true || options.readRangeRequested === true
       ? TOOL_RESULT_RENDER_CAP_CHARS
       : READ_HISTORY_CAP_CHARS;
     return capReadSummary(turn.summary, cap, options.readStartLine);
   }
-  return capSummary(turn.summary, TOOL_RESULT_RENDER_CAP_CHARS);
+  if (!KEEP_PATTERN_TOOLS.has(turn.tool)) {
+    return capSummary(turn.summary, TOOL_RESULT_RENDER_CAP_CHARS);
+  }
+  // Compress with a keep-pattern so the tail's failure lines survive the cap
+  // (the plain head-slice used to erase FAIL/AssertionError, which live at the
+  // bottom of a log).
+  return compressToolResult(
+    { tool: turn.tool, status: turn.status, output: turn.summary },
+    {
+      maxSummaryLength: TOOL_RESULT_RENDER_CAP_CHARS,
+      maxTailLines: 40,
+      keepPattern: TOOL_RESULT_KEEP_PATTERN,
+    },
+  ).summary;
 }
 
 function isFreshGogShellResult(
@@ -313,6 +385,15 @@ export function readStartLineOf(
   const whole = Math.trunc(offset);
   if (whole < 0) return undefined;
   return Math.max(1, whole);
+}
+
+/**
+ * `true` when the call asked for a specific page (`offset` and/or `limit`).
+ * A requested page renders under the fresh cap — cutting it at the 2000-char
+ * history preview is what made paging non-progressing.
+ */
+export function hasExplicitReadRange(args: Record<string, unknown>): boolean {
+  return typeof args.offset === "number" || typeof args.limit === "number";
 }
 
 /** Room left under the cap for `capReadSummary`'s paging hint. */

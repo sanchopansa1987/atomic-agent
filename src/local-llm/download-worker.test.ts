@@ -282,7 +282,7 @@ describe("download-worker", () => {
       log: (l) => log.push(l),
       writeIntervalMs: 0,
       heartbeatMs: 0,
-      retryDelayMs: 40,
+      retryDelayMs: 1,
     });
     const id = downloadJobId("chat", CHAT.id);
     await waitFor(() => readDownloadJob(dataDir, id)?.waiting?.attempt === 2);
@@ -333,7 +333,7 @@ describe("download-worker", () => {
       mode: "gguf-only",
       log: (l) => log.push(l),
       writeIntervalMs: 0,
-      heartbeatMs: 15,
+      heartbeatMs: 1,
     });
     const id = downloadJobId("chat", CHAT.id);
     await waitFor(() => release !== null);
@@ -382,11 +382,15 @@ describe("download-worker", () => {
       writeIntervalMs: 0,
     });
     await waitFor(() => release !== null);
+    // Wait for the first chunk's progress write to land so the abort preserves
+    // the "ab" partial instead of racing the read.
+    const id = downloadJobId("chat", CHAT.id);
+    await waitFor(() => readDownloadJob(dataDir, id)?.transferredBytes === 2);
     controller.abort();
     release?.();
 
     expect(await pending).toBe("cancelled");
-    const job = readDownloadJob(dataDir, downloadJobId("chat", CHAT.id));
+    const job = readDownloadJob(dataDir, id);
     expect(job?.status).toBe("cancelled");
     const dest = resolveModelFilePath(dataDir, CHAT.id, CHAT.filename);
     expect(existsSync(dest)).toBe(false);

@@ -59,13 +59,63 @@ describe("tool.recall", () => {
     const store = new BlobStore({ rootDir: dir });
 
     await expect(
-      buildToolRecallTool(store).run({ blob: "bad" }, {
+      buildToolRecallTool(store).run({ blob: "BAD-INPUT!" }, {
         workingDir: dir,
         sessionId: "test",
         stepIndex: 0,
         signal: new AbortController().signal,
       }),
     ).rejects.toThrow(/64-character/);
+  });
+
+  it("routes a numeric row id to memory.procedures.recall instead of failing opaquely", async () => {
+    // Root-cause guard: `tool.recall` pages a blob by hash, but "recall" got
+    // called with a numeric memory/procedure id for a whole no-progress loop.
+    const dir = await mkdtemp(join(tmpdir(), "atomic-tool-recall-"));
+    dirs.push(dir);
+    const store = new BlobStore({ rootDir: dir });
+    const ctx = { workingDir: dir, sessionId: "test", stepIndex: 0, signal: new AbortController().signal };
+
+    await expect(buildToolRecallTool(store).run({ blob: 2889 }, ctx))
+      .rejects.toThrow(/memory\.procedures\.recall/);
+    await expect(buildToolRecallTool(store).run({ blob: "2889" }, ctx))
+      .rejects.toThrow(/memory\.procedures\.recall/);
+  });
+
+  it("routes a hex-looking row reference to memory.procedures.recall, noting ids are numeric", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "atomic-tool-recall-"));
+    dirs.push(dir);
+    const store = new BlobStore({ rootDir: dir });
+    const ctx = { workingDir: dir, sessionId: "test", stepIndex: 0, signal: new AbortController().signal };
+
+    await expect(buildToolRecallTool(store).run({ blob: "deadbeef" }, ctx))
+      .rejects.toThrow(/memory\.procedures\.recall/);
+    await expect(buildToolRecallTool(store).run({ blob: "1a2b" }, ctx))
+      .rejects.toThrow(/memory\.procedures\.recall/);
+  });
+
+  it("names the alternative tool when a valid hash is not stored", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "atomic-tool-recall-"));
+    dirs.push(dir);
+    const store = new BlobStore({ rootDir: dir });
+    const missing = "0".repeat(64);
+
+    await expect(
+      buildToolRecallTool(store).run({ blob: missing }, {
+        workingDir: dir,
+        sessionId: "test",
+        stepIndex: 0,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow(/blob not found/);
+    await expect(
+      buildToolRecallTool(store).run({ blob: missing }, {
+        workingDir: dir,
+        sessionId: "test",
+        stepIndex: 0,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow(/memory\.procedures\.recall/);
   });
 
   it("recovers the entire original, including content beyond the old 64000-character ceiling", async () => {

@@ -1,7 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
-vi.mock("node:fs", () => ({ readFileSync: vi.fn() }));
+vi.mock("node:fs", () => ({
+  readFileSync: vi.fn(),
+  existsSync: vi.fn(() => true),
+}));
+
+vi.mock("../native/load-better-sqlite3.js", () => ({
+  Database: vi.fn(() => ({
+    prepare: vi.fn(() => ({
+      all: vi.fn(() => [{ rowid: 1, content: "local memory note" }]),
+    })),
+    close: vi.fn(),
+  })),
+}));
 
 import {
   extractQuery,
@@ -71,20 +83,24 @@ describe("tdai-gateway", () => {
   });
 
   describe("searchMemory", () => {
-    it("returns [] on network failure without throwing", async () => {
+    it("falls back to the local index on network failure", async () => {
       vi.stubGlobal(
         "fetch",
         vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
       );
-      await expect(searchMemory("query")).resolves.toEqual([]);
+      await expect(searchMemory("query")).resolves.toEqual([
+        { id: "1", source: "local-fallback", content: "local memory note", score: 0 },
+      ]);
     });
 
-    it("returns [] when the gateway responds non-2xx", async () => {
+    it("falls back to the local index when the gateway responds non-2xx", async () => {
       vi.stubGlobal(
         "fetch",
         vi.fn().mockResolvedValue(jsonResponse({}, false, 500)),
       );
-      await expect(searchMemory("query")).resolves.toEqual([]);
+      await expect(searchMemory("query")).resolves.toEqual([
+        { id: "1", source: "local-fallback", content: "local memory note", score: 0 },
+      ]);
     });
 
     it("parses a successful gateway response into hits", async () => {

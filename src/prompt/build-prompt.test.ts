@@ -197,7 +197,7 @@ describe("buildPrompt", () => {
     expect(stablePrefix).toContain("### lessons");
   });
 
-  it("renders `currentDate` in the variable tail just before `### respond`", () => {
+  it("renders `currentDate` in the variable tail, at the generation point", () => {
     const { stablePrefix, tail, text } = buildPrompt({
       session: mkSession(),
       toolDescriptors: TOOLS,
@@ -210,11 +210,10 @@ describe("buildPrompt", () => {
     );
     // The date must live in the tail, NOT the stable prefix (KV-cache).
     expect(stablePrefix).not.toContain("CURRENT DATE:");
-    // It must sit immediately before the respond anchor.
+    // It sits after the conversation, in the last block the model reads.
     const dateIdx = text.indexOf("CURRENT DATE:");
-    const respondIdx = text.indexOf("### respond");
     expect(dateIdx).toBeGreaterThan(0);
-    expect(respondIdx).toBeGreaterThan(dateIdx);
+    expect(dateIdx).toBeGreaterThan(text.indexOf("### conversation"));
   });
 
   it("omits the date line when `currentDate` is not provided, leaving the prefix byte-stable", () => {
@@ -429,23 +428,20 @@ describe("buildPrompt", () => {
     );
   });
 
-  it("pins a short `### respond` anchor at the end of the tail (anti-loop)", () => {
+  it("carries no trailing `Respond now.` nudge (removed 2026-10-23)", () => {
     const prompt = buildPrompt({
       session: mkSession(),
       toolDescriptors: TOOLS,
       capabilities: CAPS,
       skillCatalog: SKILLS,
     });
-    expect(prompt.tail).toContain("### respond\nRespond now.");
-    expect(prompt.stablePrefix).not.toContain("### respond");
-    // Anchor must sit after the conversation section so it is the last
-    // directive the model sees before generation.
-    const respondIdx = prompt.tail.indexOf("### respond");
-    const conversationIdx = prompt.tail.indexOf("### conversation");
-    expect(respondIdx).toBeGreaterThan(conversationIdx);
+    expect(prompt.tail).not.toContain("Respond now.");
+    expect(prompt.stablePrefix).not.toContain("Respond now.");
+    // The heading-only anchor stays: it marks the agent step for steering.
+    expect(prompt.tail.trimEnd().endsWith("### respond")).toBe(true);
   });
 
-  it("places the `### respond` anchor just before the `<think>` prefill for reasoning profiles", () => {
+  it("ends a reasoning-profile tail on the `<think>` prefill", () => {
     const prompt = buildPrompt({
       session: mkSession(),
       toolDescriptors: TOOLS,
@@ -453,11 +449,9 @@ describe("buildPrompt", () => {
       skillCatalog: SKILLS,
       profile: QWEN_THINK_PROFILE,
     });
-    expect(prompt.tail.endsWith("<think>\n")).toBe(true);
-    const respondIdx = prompt.tail.lastIndexOf("### respond");
-    const thinkIdx = prompt.tail.lastIndexOf("<think>");
-    expect(respondIdx).toBeGreaterThan(-1);
-    expect(thinkIdx).toBeGreaterThan(respondIdx);
+    expect(prompt.tail).not.toContain("Respond now.");
+    // The heading-only anchor still sits before the prefill.
+    expect(prompt.tail.indexOf("### respond")).toBeGreaterThan(-1);
   });
 
   it("step and turn counters do not leak into the prompt text (KV-cache hygiene)", () => {
@@ -531,7 +525,7 @@ describe("buildPrompt", () => {
     expect(prompt.tail.endsWith("<think>\n")).toBe(false);
     expect(prompt.tail).not.toContain("<think>");
     // The emit anchor stays the last directive before generation.
-    expect(prompt.tail.trimEnd().endsWith("Respond now.")).toBe(true);
+    expect(prompt.tail.trimEnd().endsWith("### respond")).toBe(true);
   });
 
   it("suppressReasoningPrefill drops the gemma turn framing and system token (issue #283)", () => {
@@ -571,9 +565,7 @@ describe("buildPrompt", () => {
         thinking: "off",
       });
       expect(prompt.tail.endsWith("<think>\n\n</think>\n\n")).toBe(true);
-      expect(prompt.tail.endsWith("Respond now.\n\n<think>\n\n</think>\n\n")).toBe(
-        true,
-      );
+      expect(prompt.tail).not.toContain("Respond now.");
       // Exactly one think block, the closed one: no open prefill after it.
       expect(prompt.tail.match(/<think>/g)).toHaveLength(1);
       // The stable prefix is untouched — the switch is tail bytes only.
@@ -628,7 +620,7 @@ describe("buildPrompt", () => {
         suppressReasoningPrefill: true,
       });
       expect(prompt.tail).not.toContain("<think>");
-      expect(prompt.tail.trimEnd().endsWith("Respond now.")).toBe(true);
+      expect(prompt.tail).not.toContain("Respond now.");
     });
   });
 
@@ -1170,6 +1162,7 @@ describe("buildPrompt", () => {
       recalledLessons: [
         { id: 3, activation: "when", tags: [], workingDir: null, updatedAt: 1 },
       ],
+      graphSection: "hubs: #1(4) note one | components [3] (largest 3)",
       recalledProcedures: [
         { id: 4, activation: "how", tags: [], workingDir: null, updatedAt: 1 },
       ],
@@ -1205,10 +1198,12 @@ describe("buildPrompt", () => {
     // on a model with no partial prefix reuse).
     expect(idx("### conversation")).toBeLessThan(idx("### profile"));
     expect(idx("### profile")).toBeLessThan(idx("### lessons"));
-    expect(idx("### lessons")).toBeLessThan(idx("### procedures"));
+    expect(idx("### lessons")).toBeLessThan(idx("### graph"));
+    expect(idx("### graph")).toBeLessThan(idx("### procedures"));
     expect(idx("### procedures")).toBeLessThan(idx("### loaded-skills"));
     expect(idx("### loaded-skills")).toBeLessThan(idx("### loaded-tools"));
-    expect(idx("### loaded-tools")).toBeLessThan(idx("### respond"));
+    // The tail ends on real content now: no trailing emit anchor.
+    expect(idx("### loaded-tools")).toBeGreaterThan(-1);
   });
 
   it("leaves loaded-skills and profile blocks byte-identical when only knownFacts change", () => {
@@ -1904,7 +1899,9 @@ describe("buildPrompt structured form (`messages`)", () => {
     expect(tail).toContain("### world");
     expect(tail).toContain("### notice\nbe brief");
     expect(tail).toContain("CURRENT DATE: 2026-09-14");
-    expect(tail.trimEnd().endsWith("### respond\nRespond now.")).toBe(true);
+    expect(tail).not.toContain("Respond now.");
+    // The heading-only anchor is expected; `### conversation` is not.
+    expect(tail).toContain("### respond");
     // The flat tail is the same halves with the conversation between them.
     const [before, after] = tail.split("### task-policy").length > 1
       ? [tail.slice(0, tail.indexOf("### task-policy")), tail.slice(tail.indexOf("### task-policy"))]
