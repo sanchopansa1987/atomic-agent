@@ -6,6 +6,8 @@ import {
   suggestHeapCeilingMb,
   HEAP_WARN_RATIO,
   HEAP_CRITICAL_RATIO,
+  HEAP_RESTART_RATIO,
+  heapNeedsRestart,
   type HeapReading,
 } from "./heap-guard.js";
 
@@ -49,6 +51,27 @@ describe("classifyHeap", () => {
     const s = classifyHeap({ usedBytes: 5 * GB, limitBytes: 0 });
     expect(s.severity).toBe("ok");
     expect(s.ratio).toBe(0);
+  });
+});
+
+describe("heapNeedsRestart", () => {
+  it("stays false below the restart ratio", () => {
+    expect(heapNeedsRestart(reading(4 * HEAP_RESTART_RATIO - 0.01))).toBe(false);
+  });
+
+  it("trips at the restart ratio, before critical", () => {
+    expect(heapNeedsRestart(reading(4 * HEAP_RESTART_RATIO))).toBe(true);
+    expect(HEAP_RESTART_RATIO).toBeLessThan(HEAP_CRITICAL_RATIO);
+  });
+
+  it("trips on the real 2026-10-31 numbers (2730 MB ceiling)", () => {
+    const ceiling = 2730 * 1_048_576;
+    expect(heapNeedsRestart({ usedBytes: 2400 * 1_048_576, limitBytes: ceiling })).toBe(true);
+    expect(heapNeedsRestart({ usedBytes: 718 * 1_048_576, limitBytes: ceiling })).toBe(false);
+  });
+
+  it("never trips when the runtime reports no ceiling", () => {
+    expect(heapNeedsRestart({ usedBytes: 5 * GB, limitBytes: 0 })).toBe(false);
   });
 });
 

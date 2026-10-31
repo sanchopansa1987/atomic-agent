@@ -885,8 +885,7 @@ export async function tuiCommand(args: string[]): Promise<number> {
   // resolves to the new inode. `spawnSync` with inherited stdio hands the TTY
   // to the child and blocks until it exits, then we propagate its exit code —
   // a seamless restart without a detached-process race for the terminal.
-  if (restartRequested) {
-    process.stdout.write("restarting atomic-agent…\n");
+  if (restartRequested || orchestrator.restartRequested) {
     // SEA prepends an extra argv slot, so the real user args start at index 2
     // (see userArgsFromArgv in cli/index.ts). Re-using process.argv.slice(1)
     // here re-injects the invoke-path slot and the relaunched SEA process reads

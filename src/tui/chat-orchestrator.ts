@@ -68,7 +68,8 @@ import {
   type LocalTurnGateFacts,
 } from "./local-turn-gate.js";
 import { turnsToMessages } from "./turns-to-messages.js";
-import { createHeapGuard } from "../runtime/heap-guard.js";
+import { createHeapGuard, heapNeedsRestart, readProcessHeap } from "../runtime/heap-guard.js";
+import type { HeapReading, HeapStatus } from "../runtime/heap-guard.js";
 import type { SessionPickerEntry, TuiState } from "./tui-state.js";
 
 const DEBUG_BUNDLE_TRACE_LIMIT = 10;
@@ -113,6 +114,12 @@ export interface ChatOrchestratorOptions {
    * config file.
    */
   sessionRailLayout?: SessionRailLayoutStore;
+  /**
+   * Heap reading for the crash latch. Injectable for the same reason as
+   * `readGateFacts`: a test hands it a critical reading without allocating
+   * 2.5 GB, and the default stays the live process.
+   */
+  readHeap?: () => HeapReading;
 }
 
 /** Multiline text for the chat transcript (`/memory`); feed still gets `runtime_info` lines. */
@@ -1117,16 +1124,76 @@ export class ChatOrchestrator {
    * Checked at turn boundaries — the crash grew across turns, including
    * long idle gaps between them.
    */
-  private readonly heapGuard = createHeapGuard();
+  /**
+   * Issue #121 again (2026-10-30): a 12.5 h session died at 2 809 MB having
+   * never shown the warning it was told to show, because `createHeapGuard`
+   * reports only a *rise* and the notice scrolled away. Two changes: the
+   * reading source is injectable (so the latch is testable), and once a
+   * reading is critical the latch stays set — V8 cannot raise its own
+   * ceiling, so refusing the next turn is the only way to keep the session
+   * alive and the transcript on disk.
+   */
+  private heapGuard: { check: () => HeapStatus | null } | null = null;
+  private heapCritical = false;
+  /** Mid-turn watchdog; armed on the first turn, never disarmed. */
+  private heapWatchdog: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Set when the heap watchdog trips so the TUI's exit path re-execs this
+   * process instead of just quitting (tui-command.ts reads it next to its own
+   * `restartRequested`).
+   */
+  public restartRequested = false;
 
-  private announceHeapPressure(): void {
-    const status = this.heapGuard.check();
+  /**
+   * 2026-10-31: four crashes in one afternoon, all SIGABRT in
+   * `Runtime_MapGrow` from the event-loop **check phase** — i.e. mid-turn,
+   * with the boundary gate above never getting a say. Growth measured on the
+   * live process: 718 MB after 4m18s (~165 MB/min). This polls every 5 s and
+   * aborts the running turn before the ceiling is reached, which frees the
+   * spike and keeps the session on disk.
+   * ponytail: aborts rather than handing the TTY to a child; upgrade path is
+   * to re-exec directly from here once the TUI has an exit API.
+   */
+  private armHeapWatchdog(): void {
+    if (this.heapWatchdog) return;
+    const read = this.options.readHeap ?? readProcessHeap;
+    this.heapWatchdog = setInterval(() => {
+      if (this.heapCritical) return;
+      const reading = read();
+      if (!heapNeedsRestart(reading)) return;
+      this.heapCritical = true;
+      this.restartRequested = true;
+      const mb = (n: number) => `${Math.round(n / 1_048_576)} MB`;
+      this.notify(
+        `memory ${mb(reading.usedBytes)} of ${mb(reading.limitBytes)} — ` +
+          `aborting this turn before the runtime aborts the process. ` +
+          `The turn is on disk; restart atomic-agent to continue.`,
+      );
+      this.currentController?.abort();
+    }, 5_000);
+    this.heapWatchdog.unref?.();
+  }
+
+  private heapAllowsTurn(): boolean {
+    this.armHeapWatchdog();
+    const guard = (this.heapGuard ??= createHeapGuard(this.options.readHeap ?? readProcessHeap));
+    const status = guard.check();
     if (status?.message) this.notify(status.message);
+    if (status?.severity === "critical") this.heapCritical = true;
+    return !this.heapCritical;
   }
 
   private async runOneTurn(text: string, fromQueue = false): Promise<void> {
     if (!this.session) return;
-    this.announceHeapPressure();
+    if (!this.heapAllowsTurn()) {
+      // 2026-10-30: a 12.5 h session died at 2809 MB with the transcript
+      // lost. Refuse the turn while there is still headroom to restart.
+      this.notify(
+        "turn refused: heap is past the critical line — finish nothing in " +
+          "this process. Restart atomic-agent; the session is already saved.",
+      );
+      return;
+    }
     // Pre-turn gate: a managed local model that is not on disk cannot
     // serve this turn, so fail fast with the real fix instead of
     // burning the transport retry budget against a daemon that cannot

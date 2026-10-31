@@ -42,6 +42,25 @@ export const HEAP_WARN_RATIO = 0.75;
 export const HEAP_CRITICAL_RATIO = 0.9;
 
 /**
+ * Fraction at which the running turn is aborted for a re-exec. Below
+ * critical on purpose: 0.85 of a 2 730 MB ceiling leaves ~410 MB to flush
+ * the turn and hand the TTY to the child — the difference between a restart
+ * and a SIGABRT.
+ */
+export const HEAP_RESTART_RATIO = 0.85;
+
+/**
+ * Mid-turn trip wire. `classifyHeap` is polled at turn boundaries, and every
+ * 2026-10-31 crash happened *inside* one turn — SIGABRT in `Runtime_MapGrow`
+ * called from the event-loop check phase, four times in one afternoon. A
+ * boundary gate cannot stop that, so this is polled on a timer instead.
+ */
+export function heapNeedsRestart(reading: HeapReading): boolean {
+  if (!Number.isFinite(reading.limitBytes) || reading.limitBytes <= 0) return false;
+  return reading.usedBytes / reading.limitBytes >= HEAP_RESTART_RATIO;
+}
+
+/**
  * The ceiling to suggest when advising a restart: a third of physical RAM,
  * clamped to 2048..4096 MB. The old advice was a hardcoded 8192 MB, which is
  * most of an 8 GB box — following it swaps the machine instead of saving it.
