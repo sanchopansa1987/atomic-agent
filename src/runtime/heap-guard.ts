@@ -50,12 +50,24 @@ export const HEAP_CRITICAL_RATIO = 0.9;
 export const HEAP_RESTART_RATIO = 0.85;
 
 /**
+ * Hard byte ceiling, independent of the reported limit. `NODE_OPTIONS` sets
+ * `--max-old-space-size` in `~/.zshrc`, which a launch that does not source
+ * zsh (IDE task, cron, a GUI double-click, `env -i`) never gets: the ceiling
+ * then defaults to ~4 GB, 85 % of it is 3.4 GB, and an 8 GB box swaps to death
+ * *before* the ratio trips. This is the last line: measured 2026-10-31, the
+ * TUI was healthy at 1432 MB and died at 2730 MB, so 1800 MB is the latest
+ * point that still leaves room to flush a turn.
+ */
+export const HEAP_RESTART_ABS_BYTES = 1800 * 1_048_576;
+
+/**
  * Mid-turn trip wire. `classifyHeap` is polled at turn boundaries, and every
  * 2026-10-31 crash happened *inside* one turn — SIGABRT in `Runtime_MapGrow`
  * called from the event-loop check phase, four times in one afternoon. A
  * boundary gate cannot stop that, so this is polled on a timer instead.
  */
 export function heapNeedsRestart(reading: HeapReading): boolean {
+  if (reading.usedBytes >= HEAP_RESTART_ABS_BYTES) return true;
   if (!Number.isFinite(reading.limitBytes) || reading.limitBytes <= 0) return false;
   return reading.usedBytes / reading.limitBytes >= HEAP_RESTART_RATIO;
 }

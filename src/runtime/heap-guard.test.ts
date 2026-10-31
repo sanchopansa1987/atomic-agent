@@ -55,12 +55,12 @@ describe("classifyHeap", () => {
 });
 
 describe("heapNeedsRestart", () => {
-  it("stays false below the restart ratio", () => {
-    expect(heapNeedsRestart(reading(4 * HEAP_RESTART_RATIO - 0.01))).toBe(false);
+  it("stays false below the restart ratio on a small ceiling", () => {
+    expect(heapNeedsRestart(reading(1 * HEAP_RESTART_RATIO - 0.01, 1))).toBe(false);
   });
 
   it("trips at the restart ratio, before critical", () => {
-    expect(heapNeedsRestart(reading(4 * HEAP_RESTART_RATIO))).toBe(true);
+    expect(heapNeedsRestart(reading(1 * HEAP_RESTART_RATIO, 1))).toBe(true);
     expect(HEAP_RESTART_RATIO).toBeLessThan(HEAP_CRITICAL_RATIO);
   });
 
@@ -70,8 +70,16 @@ describe("heapNeedsRestart", () => {
     expect(heapNeedsRestart({ usedBytes: 718 * 1_048_576, limitBytes: ceiling })).toBe(false);
   });
 
-  it("never trips when the runtime reports no ceiling", () => {
-    expect(heapNeedsRestart({ usedBytes: 5 * GB, limitBytes: 0 })).toBe(false);
+  it("trips on the absolute ceiling when the runtime reports none", () => {
+    // A launch that never sourced zsh gets no --max-old-space-size at all.
+    expect(heapNeedsRestart({ usedBytes: 5 * GB, limitBytes: 0 })).toBe(true);
+    expect(heapNeedsRestart({ usedBytes: 1 * GB, limitBytes: 0 })).toBe(false);
+  });
+
+  it("trips at 1800 MB even under Node's ~4 GB default ceiling", () => {
+    const defaultCeiling = 4 * GB;
+    expect(heapNeedsRestart({ usedBytes: 2400 * 1_048_576, limitBytes: defaultCeiling })).toBe(true);
+    expect(heapNeedsRestart({ usedBytes: 1799 * 1_048_576, limitBytes: defaultCeiling })).toBe(false);
   });
 });
 
