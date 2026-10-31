@@ -41,6 +41,27 @@ export function appendReasoning(
 }
 
 /**
+ * Streaming text is a RENDER buffer, not storage: the full text is already in
+ * the trace and, for reasoning, re-supplied by `upsertReasoning` on the final
+ * step event. Concatenating it per delta re-allocates the whole block every
+ * chunk — O(n²) allocation for a 100 KB block, which is what walks V8 into its
+ * heap ceiling mid-session (`FatalProcessOutOfMemory` aborts on 2026-10-27
+ * 01:27/11:22 and 2026-10-28 00:45, heap snapshot retainer = these strings).
+ * Capping keeps per-delta allocation constant.
+ */
+export const STREAM_RENDER_CAP = 8192;
+
+const ELIDE_HEAD = STREAM_RENDER_CAP / 2;
+const ELIDE_TAIL = STREAM_RENDER_CAP / 2;
+
+/** Head + elision marker + tail, so a capped stream still shows the live edge. */
+export function capStreamText(text: string): string {
+  if (text.length <= STREAM_RENDER_CAP) return text;
+  const elided = text.length - ELIDE_HEAD - ELIDE_TAIL;
+  return `${text.slice(0, ELIDE_HEAD)}… [${elided} chars elided] …${text.slice(-ELIDE_TAIL)}`;
+}
+
+/**
  * Append an incremental reasoning chunk streamed from the model. When a
  * reasoning entry for the same `stepIndex` already exists at the tail, the
  * delta is concatenated onto its text so the TUI renders a single growing
@@ -55,7 +76,10 @@ export function appendReasoningDelta(
   if (params.text.length === 0) return state;
   const last = state.reasoning.at(-1);
   if (last && last.stepIndex === params.stepIndex) {
-    const updated: ReasoningEntry = { ...last, text: last.text + params.text };
+    const updated: ReasoningEntry = {
+      ...last,
+      text: capStreamText(last.text + params.text),
+    };
     const reasoning = [...state.reasoning.slice(0, -1), updated];
     return { ...state, reasoning };
   }

@@ -191,6 +191,19 @@ const TOOLS_FULL_BODY_WHEN_FRESH: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Diff bodies are already bounded by the edit tool's own preview caps
+ * (PREVIEW_MAX_LEN 14_000 / DIFF_MAX_LINES 200), so the 400-char history trim
+ * buys nothing and costs the changed hunk. Measured 2026-10-27: a session of
+ * seven small edits read back as fragments — every diff in history was elided
+ * through its middle, so the model could not re-check what it had written.
+ */
+const DIFF_TOOLS_HISTORY_FULL: ReadonlySet<string> = new Set([
+  "os.fs.edit",
+  "os.fs.diff",
+  "os.fs.patch",
+]);
+
+/**
  * Tools whose output may be compressed with the keep-pattern (head + every
  * failure line + tail). Everything else gets the plain cap. Measured 2026-10-20:
  * compressing an `os.fs.grep` of source code kept 2 of 19 lines and ate the code
@@ -206,11 +219,22 @@ const KEEP_PATTERN_TOOLS: ReadonlySet<string> = new Set([
 
 /**
  * Cap applied to fresh-bypass tool results once they age out of the
- * current macro-turn. Matches the original `compressToolResult` default
- * (400 chars) so the historical "summary" footprint stays unchanged.
+ * current macro-turn. ponytail: raised 400 → 4000 (2026-10-31) after an
+ * audit of 80 turns showed `os.shell.run` history bodies arriving as
+ * "truncated"/"elided" fragments — 400 chars cut every multi-line command
+ * output to its first line plus a marker, so the model could not re-check
+ * what it had run. Ceiling: if 4000 still clips, cap line-based instead of
+ * char-based, same as TOOL_RESULT_RENDER_CAP_CHARS.
  */
-const TOOL_RESULT_HISTORY_CAP_CHARS = 400;
-const READ_HISTORY_CAP_CHARS = 2000;
+const TOOL_RESULT_HISTORY_CAP_CHARS = 4000;
+/**
+ * Read results age to a `capReadSummary` preview in history. 2000 was too
+ * small in practice: a 126-line source file came back as 43 lines once the
+ * macro-turn closed, and the rest read as data loss rather than as a preview.
+ * 8000 is the read render cap itself, so history never shows less than a fresh
+ * read would, while the paging hint still covers genuinely huge files.
+ */
+const READ_HISTORY_CAP_CHARS = 8000;
 
 export interface RenderTurnOptions {
   /**
@@ -318,7 +342,12 @@ function renderToolResultPreview(
   }
   if (TOOLS_FULL_BODY_WHEN_FRESH.has(turn.tool)) {
     if (options.inCurrentMacroTurn === true) return turn.summary;
-    return capSummary(turn.summary, TOOL_RESULT_HISTORY_CAP_CHARS);
+    return capSummary(
+      turn.summary,
+      DIFF_TOOLS_HISTORY_FULL.has(turn.tool)
+        ? TOOL_RESULT_RENDER_CAP_CHARS
+        : TOOL_RESULT_HISTORY_CAP_CHARS,
+    );
   }
   // The orchestrator's review input. A fan-out report runs past the generic
   // cap as soon as a few workers answer at length, and a clipped one hid the

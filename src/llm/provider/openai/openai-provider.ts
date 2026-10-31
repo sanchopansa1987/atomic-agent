@@ -345,6 +345,12 @@ export class OpenAiProvider implements LlmProvider {
     let accumulated = "";
     let accumulatedReasoning = "";
     let streamFinal: StreamFinalResult | void = undefined;
+    // Wall-clock split for the trace. The OpenAI-compatible wire carries no
+    // timings (unlike llama-server's `timings` payload), so promptMs is measured
+    // as time-to-first-chunk — network + queue + prefill — and predictedMs is
+    // everything after it. Reset on a reopen, which replays from the top.
+    let streamStartedAt = Date.now();
+    let firstChunkAt: number | null = null;
     // The body the live stream was opened with; see `OnOpenAiRequestBody`.
     let sentBody: Record<string, unknown> | undefined;
     // Flipped the instant the first chunk leaves this generator. Before
@@ -383,6 +389,13 @@ export class OpenAiProvider implements LlmProvider {
       attempt <= OPENAI_MAX_ATTEMPTS;
       attempt += 1
     ) {
+      if (attempt > 1) {
+        // A reopen replays the completion from the top, so the dead attempt's
+        // wall time must not be billed to the live one. The first attempt keeps
+        // the clock started before the first open — that wait IS prompt time.
+        streamStartedAt = Date.now();
+        firstChunkAt = null;
+      }
       try {
         // Opening the stream (connect + status check) happens inside the
         // client's bounded retry, strictly before the first chunk exists.
@@ -414,6 +427,7 @@ export class OpenAiProvider implements LlmProvider {
             break attempts;
           }
           const chunk = next.value;
+          if (firstChunkAt === null) firstChunkAt = Date.now();
           if (chunk.delta) accumulated += chunk.delta;
           if (chunk.reasoningDelta)
             accumulatedReasoning += chunk.reasoningDelta;
@@ -496,6 +510,7 @@ export class OpenAiProvider implements LlmProvider {
       this.defaultChatModel,
       accumulated,
       accumulatedReasoning,
+      { startedAt: streamStartedAt, firstChunkAt },
     );
     if (accumulated.length > 0 && final.content.length === 0) {
       final.content = accumulated;
@@ -640,6 +655,7 @@ function completionFromStreamFinal(
   defaultChatModel: string,
   accumulated: string,
   accumulatedReasoning: string,
+  clock: { startedAt: number; firstChunkAt: number | null },
 ): CompletionResult {
   const usage = streamFinal?.usage ?? {
     promptTokens: 0,
@@ -647,14 +663,20 @@ function completionFromStreamFinal(
     totalTokens: 0,
   };
   const finishReason = streamFinal?.finishReason ?? null;
+  // Measured, not modelled: an OpenAI-compatible stream carries no timings, so
+  // the split is wall clock — time to the first chunk is prompt processing
+  // (network + queue + prefill), everything after it is generation. A stream
+  // that ended before any chunk arrived bills the whole wait to the prompt.
+  const endedAt = Date.now();
+  const firstTokenAt = clock.firstChunkAt ?? endedAt;
   return {
     content: streamFinal?.content ?? accumulated,
     reasoningContent: streamFinal?.reasoningContent ?? accumulatedReasoning,
     stop: finishReason !== "length",
     truncated: finishReason === "length",
     timing: {
-      promptMs: 0,
-      predictedMs: 0,
+      promptMs: Math.max(0, firstTokenAt - clock.startedAt),
+      predictedMs: Math.max(0, endedAt - firstTokenAt),
       promptTokens: usage.promptTokens,
       predictedTokens: usage.completionTokens,
     },

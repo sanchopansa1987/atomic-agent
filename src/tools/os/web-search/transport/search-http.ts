@@ -45,6 +45,11 @@ export interface SearchHttpRequest {
   maxResponseBytes?: number;
   runCommand?: typeof defaultRunCommand;
   lookup?: HostLookup;
+  /**
+   * Permits a loopback target. Set only by the SearXNG provider, whose URL
+   * comes from operator config; every model-facing caller leaves it unset.
+   */
+  allowLoopback?: boolean;
   /** Overrides the 429 retry schedule; `maxRetries: 0` disables retrying. */
   retryPolicy?: SearchRetryPolicy;
   /** Injectable sleep so tests do not spend real wall-clock in backoff. */
@@ -128,6 +133,7 @@ async function sendOnce(
   for (let hop = 0; ; hop++) {
     const pinnedIps = await assertHostAllowed(currentUrl, {
       lookup: request.lookup,
+      allowLoopback: request.allowLoopback,
     });
     const curlArgs = buildCurlArgs({
       url: currentUrl,

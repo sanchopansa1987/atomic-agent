@@ -510,3 +510,50 @@ function queueSnapshots(actions: readonly TuiAction[]): readonly string[][] {
     )
     .map((a) => [...a.queued]);
 }
+
+describe("ChatOrchestrator heap latch", () => {
+  // 2026-10-30: a 12.5 h session died at 2 809 MB mid-turn. The guard's
+  // notice was a one-off and the next turn ran anyway; the latch is the fix,
+  // so both directions are asserted: critical refuses, healthy still runs.
+  const runTurnStub = () =>
+    vi.fn(() => Promise.resolve({ session: session(), reason: "reply", stepCount: 1 }));
+
+  function harness(runTurn: ReturnType<typeof runTurnStub>, readHeap: () => { usedBytes: number; limitBytes: number }) {
+    const bus = makeTuiEventBus();
+    const actions: TuiAction[] = [];
+    bus.subscribe((a) => actions.push(a));
+    const orchestrator = new ChatOrchestrator(stubRuntime(runTurn), bus, {
+      maxSteps: 5,
+      llamaUrl: "http://127.0.0.1:8080",
+      readGateFacts: cloudGateFacts,
+      readHeap,
+    });
+    return { orchestrator, actions };
+  }
+
+  it("runs the turn while the heap is healthy", async () => {
+    const runTurn = runTurnStub();
+    const { orchestrator } = harness(runTurn, () => ({ usedBytes: 10, limitBytes: 100 }));
+    orchestrator.sendMessage("work");
+    await Promise.resolve();
+    expect(runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses the turn and says why once the heap is critical", async () => {
+    const runTurn = runTurnStub();
+    const { orchestrator, actions } = harness(runTurn, () => ({
+      usedBytes: 95,
+      limitBytes: 100,
+    }));
+    orchestrator.sendMessage("work");
+    await Promise.resolve();
+    expect(runTurn).not.toHaveBeenCalled();
+    const refused = actions.some(
+      (a) =>
+        a.type === "system_message" &&
+        "text" in a &&
+        String((a as { text: unknown }).text).includes("heap is past the critical line"),
+    );
+    expect(refused).toBe(true);
+  });
+});

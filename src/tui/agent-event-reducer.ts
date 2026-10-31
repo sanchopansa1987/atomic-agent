@@ -21,6 +21,7 @@ import {
   appendUserMessage,
   applyMetric,
   beginStreamingToolCall,
+  capStreamText,
   finalizeStreamingToolCall,
   finishRun,
   finishRunWithoutHistory,
@@ -842,8 +843,9 @@ function reduceStepEvent(
     case "assistant_delta":
       return {
         ...state,
-        streamingAssistantText:
+        streamingAssistantText: capStreamText(
           (state.streamingAssistantText ?? "") + event.text,
+        ),
       };
     case "prompt_captured": {
       const withFeed = appendFeed(state, {

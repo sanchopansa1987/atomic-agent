@@ -212,7 +212,7 @@ export function buildOsWebFetchTool(
           tool: TOOL_NAME,
           status: isHttpError ? "error" : "ok",
           output: isHttpError
-            ? `HTTP ${outcome.status} for ${outcome.finalUrl}`
+            ? `HTTP ${outcome.status} for ${outcome.finalUrl}${refusalHint(outcome.status)}`
             : text,
           details,
         },
@@ -223,6 +223,23 @@ export function buildOsWebFetchTool(
       );
     },
   };
+}
+
+/**
+ * A bare `HTTP 403` dead-ends the turn: nothing distinguishes "wrong URL" from
+ * "this site refuses every automated client", so the same wrong fetch gets
+ * re-derived on the next attempt. Name the refusal and the way out instead.
+ */
+function refusalHint(status: number): string {
+  if (status === 401 || status === 403 || status === 451) {
+    return (
+      " — the site refuses automated clients; do not re-fetch it. " +
+      "Take the facts from the os.web.search snippet, or fetch a primary source " +
+      "(regulator, gazette, legal database) instead."
+    );
+  }
+  if (status === 429) return " — rate-limited; wait before trying another source.";
+  return "";
 }
 
 function parseArgs(

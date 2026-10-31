@@ -747,6 +747,19 @@ describe("os.web.fetch against a bot wall", () => {
     expect(result.summary).toContain("do not re-fetch");
   });
 
+  it("tells the model what a bare 403 means and what to do instead", async () => {
+    // No challenge HTML: the site simply refuses automated clients. The old
+    // output was "HTTP 403 for <url>" — indistinguishable from a wrong URL, so
+    // the same bot-blocked fetch got re-derived on the next attempt.
+    const result = await toolReturning(403, "Forbidden").run(
+      { url: "https://example.com/a" },
+      ctx(),
+    );
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("refuses automated clients");
+    expect(result.summary).toContain("do not re-fetch");
+  });
+
   it("leaves an ordinary page alone", async () => {
     const result = await toolReturning(200, ARTICLE).run(
       { url: "https://example.com/a" },

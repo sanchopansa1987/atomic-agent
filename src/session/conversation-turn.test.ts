@@ -195,6 +195,45 @@ describe("conversation-turn helpers", () => {
     expect(rendered).not.toContain("rendering-truncated");
     expect(rendered.startsWith(prefix + "line 1 ")).toBe(true);
   });
+  it("keeps a mid-size historical read whole now that the history cap is 8000", () => {
+    // ~5K chars: this is the size that used to come back as a 43-line preview
+    // once the macro-turn closed, and read as data loss rather than a preview.
+    const fileLines = Array.from(
+      { length: 126 },
+      (_, i) => `line ${i + 1} = "${"x".repeat(30)}";`,
+    );
+    const summary = fileLines.join("\n");
+    expect(summary.length).toBeGreaterThan(2000);
+    expect(summary.length).toBeLessThan(12000);
+    const rendered = renderTurnForPrompt(
+      toolResultTurn({ tool: "os.fs.read", status: "ok", summary, at: 5 }),
+      { readStartLine: 1 },
+    );
+    expect(rendered).toContain(fileLines[fileLines.length - 1]!);
+    expect(rendered).not.toContain("more lines are not shown");
+  });
+
+  it("keeps an aged os.fs.edit diff whole instead of eliding its middle", () => {
+    // A real session of seven small edits read back as fragments: history
+    // trimmed every diff to 400 chars, so the changed hunk was gone. A diff is
+    // already bounded by PREVIEW_MAX_LEN/DIFF_MAX_LINES, so history must not
+    // re-cut it — it is the one output the model checks its own edit against.
+    const diff = [
+      "--- a/scripts/x.py",
+      "+++ b/scripts/x.py",
+      ...Array.from({ length: 20 }, (_, i) => `-old line ${i + 1} = ${"y".repeat(30)}`),
+      ...Array.from({ length: 20 }, (_, i) => `+new line ${i + 1} = ${"z".repeat(30)}`),
+    ].join("\n");
+    expect(diff.length).toBeGreaterThan(1200);
+    const rendered = renderTurnForPrompt(
+      toolResultTurn({ tool: "os.fs.edit", status: "ok", summary: diff, at: 6 }),
+      {},
+    );
+    expect(rendered).toContain("+new line 20");
+    expect(rendered).not.toContain("rendering-truncated");
+    expect(rendered).not.toContain("chars elided");
+  });
+
   it("falls back to a character cut for an os.fs.read with no usable line break", () => {
     const rendered = renderTurnForPrompt(
       toolResultTurn({

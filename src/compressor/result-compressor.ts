@@ -58,8 +58,22 @@ export const TOOL_RESULT_KEEP_PATTERN =
 export const TOOL_RESULT_STRUCTURE_PATTERN =
   /^(?:#{1,4}\s|[-=*#]{2,}.*[-=*#]{2,}$|[-=]{3,}$|\$ |exit: |\[[^\]]{1,80}\]$|\S[^\n]{0,58}:$)/;
 
+/**
+ * Default budget = the render cap, NOT a summary length. Callers that want a
+ * deliberately short body pass `maxSummaryLength` explicitly (mcp projections,
+ * refusal messages); a tool that simply returns its output gets the output.
+ *
+ * Measured 2026-10-27: the default was 400 chars, so every tool calling
+ * `compressToolResult({tool, status, output})` — os.fs.edit among them — had
+ * its result shredded at CREATION time, before the render layer could keep it
+ * whole. Seven edits in one session read back as `… [N chars elided] …` with
+ * 62–952 chars gone from the middle of the diff, and the blob pointer that
+ * followed was the only copy of what had been written. Tools bound their own
+ * output (edit preview 14 000, reads page, grep has headLimit); anything over
+ * this cap still keeps head/tail and stores the full body for `tool.recall`.
+ */
 const DEFAULTS: CompressorOptions = {
-  maxSummaryLength: 400,
+  maxSummaryLength: 16_000,
   maxTailLines: 12,
 };
 

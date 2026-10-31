@@ -537,3 +537,28 @@ describe("OpenAiProvider stream transport retry (cancellation and commit orderin
     expect(result.content).toBe("real");
   });
 });
+
+describe("OpenAiProvider completion timing", () => {
+  // The bug this pins: completionFromStreamFinal hardcoded promptMs/predictedMs
+  // to 0, so every llm_completion trace line reported zero time and prefill
+  // could never be told apart from generation.
+  it("reports a measured prompt/generation split instead of zeros", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => {
+      // Delay before the stream opens: the real time-to-first-chunk shape.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return streamingResponse([contentFrame("hello"), STOP_FRAMES]);
+    });
+
+    const { result } = await drain(
+      provider(fetchImpl).completeStream({ prompt: "hi" }),
+    );
+
+    expect(result.timing).toBeDefined();
+    expect(result.timing?.promptMs).toBeGreaterThanOrEqual(15);
+    expect(result.timing?.predictedMs).toBeGreaterThanOrEqual(0);
+    // Token counts still come from the provider's usage block, not the clock.
+    expect(result.timing?.promptTokens).toBe(1);
+    expect(result.timing?.predictedTokens).toBe(2);
+    expect(result.content).toBe("hello");
+  });
+});

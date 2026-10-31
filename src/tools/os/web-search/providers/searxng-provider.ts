@@ -40,6 +40,12 @@ export function createSearxngProvider(
         headers: { Accept: "application/json" },
         runCommand: deps.runCommand,
         lookup: deps.lookup,
+        // ponytail: loopback is allowed here and only here, because this URL
+        // comes from operator config (`web.search.searxng.instanceUrl`), not
+        // from a model-supplied argument. Drop the opt-in and a local
+        // instance dies behind the SSRF guard, which is exactly how web
+        // search ended up pinned to a DuckDuckGo that now answers 202.
+        allowLoopback: true,
       });
       assertProviderStatus(response, "searxng", "SearXNG");
       return parseSearxngJson(response.body, options.maxResults);

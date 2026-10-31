@@ -163,8 +163,25 @@ export function isBlockedIp(value: string): boolean {
   return isBlockedIpv4(value) || isBlockedIpv6(value);
 }
 
+/**
+ * Loopback only — 127.0.0.0/8 and ::1. Narrower than {@link isBlockedIp}:
+ * the single caller that opts in passes a URL the operator wrote into config
+ * (a local SearXNG instance), never a URL an answer or a fetched page supplied.
+ */
+export function isLoopbackIp(value: string): boolean {
+  const v4 = parseIpv4ToInt(value);
+  if (v4 !== null) return v4 >>> 24 === 127;
+  return parseIpv6ToBigInt(value) === 1n;
+}
+
 export interface AssertHostAllowedOptions {
   lookup?: HostLookup;
+  /**
+   * Permit a loopback target. Off by default; set only for an
+   * operator-configured local endpoint, so the model-facing fetch surface
+   * keeps its "no internal services" property.
+   */
+  allowLoopback?: boolean;
 }
 
 /**
@@ -201,6 +218,7 @@ export async function assertHostAllowed(
   // IP literals do not need DNS — reject them directly so a custom/test
   // lookup cannot whitewash a private target by returning a public pin.
   if (isBlockedIp(host)) {
+    if (options.allowLoopback && isLoopbackIp(host)) return [host];
     throw new SsrfBlockedError(`${host} is a private/internal address`, host);
   }
   let addresses: readonly { address: string; family: number }[];
@@ -216,6 +234,8 @@ export async function assertHostAllowed(
     throw new SsrfBlockedError(`no addresses resolved for ${host}`, host);
   }
   for (const { address } of addresses) {
+    // A configured local instance resolves to loopback; the operator opted in.
+    if (options.allowLoopback && isLoopbackIp(address)) continue;
     if (isBlockedIp(address)) {
       throw new SsrfBlockedError(
         `${host} resolves to a private/internal address (${address})`,

@@ -63,8 +63,58 @@ export class ToolNotFoundError extends Error {
  * care of dispatch. Individual tools live in their own files and are
  * registered explicitly (no dynamic discovery).
  */
+/**
+ * Stable memo key. Arg order must not matter (the model emits the same call
+ * with keys in any order), so the top level is sorted. A value that cannot be
+ * stringified yields a unique key instead of a shared one — a miss costs one
+ * call, a wrong hit costs correctness.
+ */
+function memoKey(name: string, args: Record<string, unknown>): string {
+  try {
+    return `${name}:${JSON.stringify(args, Object.keys(args).sort())}`;
+  } catch {
+    return `${name}:${Math.random()}`;
+  }
+}
+
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolDefinition>();
+
+  /**
+   * Session-lifetime memo for read-only tool results. Measured 2026-10-31 over
+   * 4,125 distinct calls across all traces: 446 signatures repeated, 1,098
+   * redundant invocations (`skill.view ponytail` x83, `tool.view skill.view`
+   * x30). Every repeat buys a model step plus its uncached tail (~614 of a
+   * 4,044-token prompt), so serving the body already paid for is pure saving.
+   *
+   * Allow-list, not deny-list: a mutating tool must never be handed a stale
+   * body, so anything not named here always runs. Any memo-breaking tool
+   * clears the whole map — coarser than per-path invalidation and deliberately
+   * so: a wrong cache hit is silent data loss, a cleared cache is only work.
+   */
+  private readonly memo = new Map<string, CompressedToolResult>();
+
+  private static readonly MEMO_SAFE: ReadonlySet<string> = new Set([
+    "os.fs.read",
+    "os.fs.list",
+    "os.fs.glob",
+    "os.fs.grep",
+    "os.fs.hash",
+    "os.fs.locate_project",
+    "skill.view",
+    "tool.view",
+    "tool.recall",
+  ]);
+
+  /** Tools that can change the world; a hit after one of these would be stale. */
+  private static readonly MEMO_BREAKERS: ReadonlySet<string> = new Set([
+    "os.fs.edit",
+    "os.fs.write",
+    "os.fs.patch",
+    "os.fs.restore",
+    "os.fs.trash",
+    "os.shell.run",
+  ]);
 
   constructor(private readonly blobStore?: BlobStore) {}
 
@@ -96,7 +146,33 @@ export class ToolRegistry {
     return tool;
   }
 
+  /**
+   * Memo front door: a read-only tool called twice with the same args in one
+   * session is served the body it already produced instead of being run again.
+   * The reused body says so in `details.memo`, so neither the model nor a
+   * later reader can mistake a hit for fresh work.
+   */
   async invoke(
+    name: string,
+    args: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<CompressedToolResult> {
+    if (ToolRegistry.MEMO_BREAKERS.has(name)) this.memo.clear();
+    const key = ToolRegistry.MEMO_SAFE.has(name) ? memoKey(name, args) : null;
+    if (key) {
+      const hit = this.memo.get(key);
+      if (hit) return { ...hit, details: { ...hit.details, memo: "reused" } };
+    }
+    const result = await this.invokeFresh(name, args, ctx);
+    // Only a successful, non-truncated body is worth serving again; a truncated
+    // one carries a blob pointer that a later turn must re-read anyway.
+    if (key && result.status === "ok" && !result.truncated) {
+      this.memo.set(key, result);
+    }
+    return result;
+  }
+
+  private async invokeFresh(
     name: string,
     args: Record<string, unknown>,
     ctx: ToolContext,

@@ -26,9 +26,27 @@ describe("compressToolResult", () => {
 
     const big = Array.from({ length: 400 }, (_, i) => `line ${i} ${"x".repeat(20)}`).join("\n");
     const cut = compressToolResult({ tool: "os.fs.edit", status: "ok", output: big });
+    expect(cut.truncated).toBe(false);
+    expect(cut.summary).toBe(big);
+  });
+
+  // Regression: the 2026-10-27 run lost 62–952 chars from the MIDDLE of seven
+  // os.fs.edit diffs, because the default budget was 400 chars and the render
+  // layer's diff-exemption could not restore what creation had already cut.
+  it("never elides a diff that fits the render cap", () => {
+    const diff = Array.from({ length: 60 }, (_, i) => `+ line ${i} of the hunk`).join("\n");
+    const out = compressToolResult({ tool: "os.fs.edit", status: "ok", output: diff });
+    expect(out.truncated).toBe(false);
+    expect(out.summary).not.toContain("elided");
+    expect(out.summary).toBe(diff);
+  });
+
+  it("elides only past the render cap, and keeps the dropped body recallable", () => {
+    const huge = Array.from({ length: 1200 }, (_, i) => `line ${i} ${"x".repeat(20)}`).join("\n");
+    const cut = compressToolResult({ tool: "os.fs.edit", status: "ok", output: huge });
     expect(cut.truncated).toBe(true);
     // The dropped middle must be recoverable via the blob store, not just marked.
-    expect(cut[RAW_TOOL_OUTPUT]).toBe(big);
+    expect(cut[RAW_TOOL_OUTPUT]).toBe(huge);
   });
 
 

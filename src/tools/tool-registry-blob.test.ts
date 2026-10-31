@@ -31,7 +31,7 @@ describe("tool output storage", () => {
       async run(args) {
         const body = `${String(args.label)}\n${output}`;
         // MCP and other wrappers may spread the compressor's return value.
-        return { ...compressToolResult({ tool: "probe", status: args.fail ? "error" : "ok", output: body }) };
+        return { ...compressToolResult({ tool: "probe", status: args.fail ? "error" : "ok", output: body }, { maxSummaryLength: 400, maxTailLines: 12 }) };
       },
     });
     const results = await Promise.all([
@@ -55,13 +55,13 @@ describe("tool output storage", () => {
     registry.register({
       name: "probe_small", description: "fixture", readonly: true,
       async run() {
-        return compressToolResult({ tool: "probe_small", status: "ok", output: body });
+        return compressToolResult({ tool: "probe_small", status: "ok", output: body }, { maxSummaryLength: 2_000, maxTailLines: 10 });
       },
     });
     const result = await registry.invoke("probe_small", {}, ctx);
     expect(body.length).toBeLessThan(8_000);
     expect(result.truncated).toBe(true);
-    expect(result.summary).toContain("elided");
+    expect(result.summary).toMatch(/elided|omitted/);
     // Before this, a result this size was elided with no blob: the marker was a
     // dead end. A stored blob is what turns it into a tool.recall pointer.
     expect(result.blob).toBeTruthy();
@@ -94,7 +94,7 @@ describe("tool output storage", () => {
   it("refuses the call when a truncated body cannot be stored — never continues on unseen output", async () => {
     vi.spyOn(store, "put").mockRejectedValue(new Error("disk full"));
     const registry = new ToolRegistry(store);
-    const output = "value".repeat(2000);
+    const output = "value".repeat(4000);
     const result = compressToolResult({ tool: "probe", status: "ok", output, details: { savedFile: true } });
     expect(result.truncated).toBe(true);
     registry.register({ name: "probe", description: "fixture", readonly: false, run: async () => result });
