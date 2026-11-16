@@ -50,26 +50,53 @@ export const HEAP_CRITICAL_RATIO = 0.9;
 export const HEAP_RESTART_RATIO = 0.85;
 
 /**
- * Hard byte ceiling, independent of the reported limit. `NODE_OPTIONS` sets
- * `--max-old-space-size` in `~/.zshrc`, which a launch that does not source
- * zsh (IDE task, cron, a GUI double-click, `env -i`) never gets: the ceiling
- * then defaults to ~4 GB, 85 % of it is 3.4 GB, and an 8 GB box swaps to death
- * *before* the ratio trips. This is the last line: measured 2026-10-31, the
- * TUI was healthy at 1432 MB and died at 2730 MB, so 1800 MB is the latest
- * point that still leaves room to flush a turn.
+ * Where to photograph the heap, once. The guard can say a process is heavy but
+ * never *what* holds the bytes: measured 2026-11-17, the agent sat at 1143 MB
+ * of a 2730 MB ceiling while every stored session together was 65 MB and the
+ * largest single text was 240 KB, so storage is not the filler and a cap on it
+ * would slow turns for nothing. One snapshot at 1500 MB — well below the 2320 MB
+ * abort line, so it costs a live process nothing it was not about to lose —
+ * names the real retainer. One per process: a second snapshot on every crossing
+ * would write gigabytes for no new answer.
  */
-export const HEAP_RESTART_ABS_BYTES = 1800 * 1_048_576;
+export const HEAP_SNAPSHOT_MB = 1500;
+
+/** True the first time a reading crosses the snapshot line, then never again. */
+export function snapshotDue(reading: HeapReading, alreadyTaken: boolean, mb = HEAP_SNAPSHOT_MB): boolean {
+  return !alreadyTaken && reading.usedBytes >= mb * 1_048_576;
+}
+
+/**
+ * The ceiling worth believing: the smaller of what the runtime reports and what
+ * this machine can back with RAM. `suggestHeapCeilingMb` is the number
+ * `scripts/atomic_chat.sh` passes to `--max-old-space-size`, so on a launcher
+ * start the two are equal and this changes nothing there.
+ *
+ * Measured 2026-10-31: the TUI was healthy at 1432 MB and died at 2730 MB, so
+ * 2730 MB *is* this 8 GB box's safe ceiling. A launch that misses
+ * `--max-old-space-size` gets Node's ~4 GB default, where 85 % (3.6 GB) is past
+ * what the box can flush; believing the smaller number caps that case at the
+ * same 2730 MB — abort 2320 MB, warning 2048 MB ahead of it.
+ */
+export function effectiveLimitBytes(limitBytes: number, totalMemBytes = os.totalmem()): number {
+  const budget = suggestHeapCeilingMb(totalMemBytes) * 1_048_576;
+  if (!Number.isFinite(limitBytes) || limitBytes <= 0) return budget;
+  return Math.min(limitBytes, budget);
+}
 
 /**
  * Mid-turn trip wire. `classifyHeap` is polled at turn boundaries, and every
  * 2026-10-31 crash happened *inside* one turn — SIGABRT in `Runtime_MapGrow`
  * called from the event-loop check phase, four times in one afternoon. A
  * boundary gate cannot stop that, so this is polled on a timer instead.
+ *
+ * 2026-11-01: a flat 1800 MB byte wire used to override the ratio and fired at
+ * 66 % of the real 2730 MB ceiling, below `HEAP_WARN_RATIO` — an abort with no
+ * warning. See `effectiveLimitBytes` for why the ratio alone is the contract.
  */
-export function heapNeedsRestart(reading: HeapReading): boolean {
-  if (reading.usedBytes >= HEAP_RESTART_ABS_BYTES) return true;
-  if (!Number.isFinite(reading.limitBytes) || reading.limitBytes <= 0) return false;
-  return reading.usedBytes / reading.limitBytes >= HEAP_RESTART_RATIO;
+export function heapNeedsRestart(reading: HeapReading, totalMemBytes = os.totalmem()): boolean {
+  const limit = effectiveLimitBytes(reading.limitBytes, totalMemBytes);
+  return reading.usedBytes >= HEAP_RESTART_RATIO * limit;
 }
 
 /**
@@ -97,20 +124,23 @@ function mb(bytes: number): string {
  * Classify one heap reading. `limitBytes <= 0` (a runtime that does not
  * report a ceiling) is treated as "ok" rather than dividing by zero.
  */
-export function classifyHeap(reading: HeapReading): HeapStatus {
+export function classifyHeap(reading: HeapReading, totalMemBytes = os.totalmem()): HeapStatus {
   const { usedBytes, limitBytes } = reading;
-  if (!Number.isFinite(limitBytes) || limitBytes <= 0) {
-    return { severity: "ok", usedBytes, limitBytes, ratio: 0, message: null };
-  }
-  const ratio = usedBytes / limitBytes;
+  // Judge against the same ceiling the trip wire uses, or warn/critical and the
+  // abort disagree about what "85 %" means: `heapNeedsRestart` would cap a
+  // 4288 MB Node default at this machine's 2730 MB budget while the warning
+  // thresholds below still measured against 4288 — so the abort would arrive
+  // with no warning ahead of it, the 2026-11-01 defect again.
+  const limit = effectiveLimitBytes(limitBytes, totalMemBytes);
+  const ratio = usedBytes / limit;
   if (ratio >= HEAP_CRITICAL_RATIO) {
     return {
       severity: "critical",
       usedBytes,
-      limitBytes,
+      limitBytes: limit,
       ratio,
       message:
-        `memory critical: ${mb(usedBytes)} of ${mb(limitBytes)} used. ` +
+        `memory critical: ${mb(usedBytes)} of ${mb(limit)} usable. ` +
         `The agent may be killed by the runtime without warning — finish or ` +
         `save this turn, then restart with a bigger heap: ` +
         `NODE_OPTIONS=--max-old-space-size=${suggestHeapCeilingMb()}`,
@@ -120,15 +150,15 @@ export function classifyHeap(reading: HeapReading): HeapStatus {
     return {
       severity: "warn",
       usedBytes,
-      limitBytes,
+      limitBytes: limit,
       ratio,
       message:
-        `memory high: ${mb(usedBytes)} of ${mb(limitBytes)} used. ` +
+        `memory high: ${mb(usedBytes)} of ${mb(limit)} usable. ` +
         `Long sessions with large file reads can exhaust the default heap; ` +
         `restarting with NODE_OPTIONS=--max-old-space-size=${suggestHeapCeilingMb()} raises it.`,
     };
   }
-  return { severity: "ok", usedBytes, limitBytes, ratio, message: null };
+  return { severity: "ok", usedBytes, limitBytes: limit, ratio, message: null };
 }
 
 /**

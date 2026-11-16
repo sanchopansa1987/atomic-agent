@@ -1,5 +1,6 @@
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import v8 from "node:v8";
 
 import type { ProfileFact } from "../memory/profile-store.js";
 import type { SkillCatalogEntry } from "../prompt/stable-prefix.js";
@@ -68,7 +69,14 @@ import {
   type LocalTurnGateFacts,
 } from "./local-turn-gate.js";
 import { turnsToMessages } from "./turns-to-messages.js";
-import { createHeapGuard, heapNeedsRestart, readProcessHeap } from "../runtime/heap-guard.js";
+import {
+  createHeapGuard,
+  heapNeedsRestart,
+  readProcessHeap,
+  effectiveLimitBytes,
+  snapshotDue,
+  HEAP_RESTART_RATIO,
+} from "../runtime/heap-guard.js";
 import type { HeapReading, HeapStatus } from "../runtime/heap-guard.js";
 import type { SessionPickerEntry, TuiState } from "./tui-state.js";
 
@@ -1137,6 +1145,8 @@ export class ChatOrchestrator {
   private heapCritical = false;
   /** Mid-turn watchdog; armed on the first turn, never disarmed. */
   private heapWatchdog: ReturnType<typeof setInterval> | null = null;
+  /** One heap snapshot per process, taken at HEAP_SNAPSHOT_MB (see heap-guard). */
+  private heapSnapshotTaken = false;
   /**
    * Set when the heap watchdog trips so the TUI's exit path re-execs this
    * process instead of just quitting (tui-command.ts reads it next to its own
@@ -1160,12 +1170,32 @@ export class ChatOrchestrator {
     this.heapWatchdog = setInterval(() => {
       if (this.heapCritical) return;
       const reading = read();
+      // Name the retainer before the abort line forces a restart: the guard can
+      // see weight but never the thing holding it (2026-11-17).
+      if (snapshotDue(reading, this.heapSnapshotTaken)) {
+        this.heapSnapshotTaken = true;
+        const file = join(tmpdir(), `atomic-heap-${Date.now()}.heapsnapshot`);
+        try {
+          v8.writeHeapSnapshot(file);
+          this.notify(`heap snapshot: ${file} at ` +
+            `${Math.round(reading.usedBytes / 1_048_576)} MB — open it if this keeps growing.`);
+        } catch (err) {
+          this.notify(`heap snapshot failed: ${(err as Error).message}`);
+        }
+      }
       if (!heapNeedsRestart(reading)) return;
       this.heapCritical = true;
       this.restartRequested = true;
       const mb = (n: number) => `${Math.round(n / 1_048_576)} MB`;
+      // Read the *believed* ceiling, not the reported one: a launch that missed
+      // --max-old-space-size reports ~4 GB this 8 GB box cannot back, and a
+      // percentage against that number is the reason the abort read "nowhere
+      // near critical" (2026-11-01).
+      const believed = effectiveLimitBytes(reading.limitBytes);
+      const pct = `${Math.round((reading.usedBytes / believed) * 100)}%`;
       this.notify(
-        `memory ${mb(reading.usedBytes)} of ${mb(reading.limitBytes)} — ` +
+        `memory ${mb(reading.usedBytes)} of ${mb(believed)} usable (${pct}, ` +
+          `abort line ${Math.round(HEAP_RESTART_RATIO * 100)}%) — ` +
           `aborting this turn before the runtime aborts the process. ` +
           `The turn is on disk; restart atomic-agent to continue.`,
       );
