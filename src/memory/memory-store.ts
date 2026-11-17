@@ -16,6 +16,18 @@ import {
 
 export type MemorySource = "agent" | "user";
 
+/**
+ * Rows the runtime owns. 2026-11-17, two measured failures in one day:
+ *  (a) evicting vault rows deleted notes, and `vault_sync` re-created each under a
+ *      new id with a new canon file — 4760 files against 1897 rows, 2866 orphans;
+ *  (b) once vault rows were exempt but the cap still counted them, the target was
+ *      unreachable and eviction wiped every row it was allowed to touch: 117 agent,
+ *      276 trace and 13 session-brief rows in one instant (14:59:28).
+ * Both follow from one omission: the cap must be measured over the rows eviction can
+ * actually remove, and the vault owns everything else.
+ */
+const EVICTABLE_SQL = `source NOT IN ('vault','project-doc','git-log','vault-import')`;
+
 export interface MemoryEntry {
   id: number;
   content: string;
@@ -257,6 +269,7 @@ export class MemoryStore {
   private readonly deleteStmt: Database.Statement;
   private readonly getStmt: Database.Statement;
   private readonly countStmt: Database.Statement;
+  private readonly countEvictableStmt: Database.Statement;
   private readonly evictFifoStmt: Database.Statement;
   private readonly evictUtilityStmt: Database.Statement;
   private readonly touchOnDedupStmt: Database.Statement;
@@ -322,6 +335,9 @@ export class MemoryStore {
          FROM memories WHERE id = ?`,
     );
     this.countStmt = this.db.prepare(`SELECT COUNT(*) AS count FROM memories`);
+    this.countEvictableStmt = this.db.prepare(
+      `SELECT COUNT(*) AS count FROM memories WHERE ${EVICTABLE_SQL}`,
+    );
     // 2026-11-17 root fix: eviction deletes by raw SQL, so no canon file goes with
     // the row. Vault notes score lowest (vote 0, recall 0, oldest mtime) and were
     // evicted first — 892 at 13:24:42, 891 at 11:23:46 — then vault_sync re-added
@@ -329,7 +345,7 @@ export class MemoryStore {
     // against 1897 rows, 2866 orphans. Rows the vault owns are not the store's to
     // evict: vault_sync re-creates them anyway, so evicting one is pure duplication.
     // The runtime may only evict what it created.
-    const evictable = `source NOT IN ('vault','project-doc','git-log','vault-import')`;
+    const evictable = EVICTABLE_SQL;
     // Legacy FIFO eviction (back-compat: omit eviction options ⇒ same as v1).
     this.evictFifoStmt = this.db.prepare(
       `DELETE FROM memories WHERE id IN (
@@ -1138,7 +1154,10 @@ export class MemoryStore {
   }
 
   private evictOverflow(): void {
-    const current = this.count();
+    // Measure the cap over the rows eviction may actually remove. With the vault's
+    // rows inside the count, the target was unreachable and one overflow cleared
+    // every runtime row: 276 trace, 117 agent, 13 session-brief (2026-11-17 14:59:28).
+    const current = (this.countEvictableStmt.get() as { count: number }).count;
     if (current <= this.maxEntries) return;
     const excess = current - this.maxEntries;
     const stmt = this.evictionUtilityWeighted
