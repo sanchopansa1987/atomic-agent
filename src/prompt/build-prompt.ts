@@ -386,6 +386,13 @@ export function buildPrompt(input: BuildPromptInput): BuiltPrompt {
   // Harness S2: the graph recall block sits between lessons and procedures
   // (ordering is pinned in build-prompt.test.ts). `undefined`/`null` both mean
   // "no block" — a degraded read is indistinguishable from a disabled one.
+  // The stem sits directly above the graph: the spine is the fixed core, the graph is
+  // the noisy periphery, and reading them in that order is the point (measured
+  // 2026-11-17: the spine was in no prompt at all while the graph's top hubs were a
+  // chat fragment, two trade losses and a broken dump).
+  if (input.session.stemSection) {
+    tailAfter.push("### stem", input.session.stemSection, ``);
+  }
   if (input.session.graphSection) {
     tailAfter.push("### graph", input.session.graphSection, ``);
   }

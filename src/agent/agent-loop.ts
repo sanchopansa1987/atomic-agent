@@ -5,6 +5,7 @@ import {
 } from "./fusion-orchestrator-mode.js";
 import { join } from "node:path";
 import { recallGraphSection } from "../memory/graph-recall.js";
+import { recallStemSection } from "../memory/stem-recall.js";
 import {
   appendTurnQualityRow,
   computeTurnQuality,
@@ -1132,6 +1133,7 @@ export class AgentLoop {
 
     state = await refreshMemoryContext(this.deps, state, options);
     state = await resolveGraphSection(state);
+    state = resolveStemSection(state);
 
     // Proactively sync with the live `llama-server` before the first
     // step. Catches the case where the operator swapped the model
@@ -2903,6 +2905,17 @@ async function resolveGraphSection(
     join(state.workingDir, "scripts", "brain_graph.py");
   const body = await recallGraphSection(scriptPath);
   return { ...state, graphSection: body };
+}
+
+/**
+ * The `### stem` block: the identity spine (lessons, open work, decisions), read once
+ * per turn from `<workingDir>/vault/agent-memory/`. Measured 2026-11-17: those files
+ * were read by no code path, so the spine reached the model only when asked for, while
+ * the always-injected pin budget was 80% prose. A missing spine degrades to `null`.
+ */
+function resolveStemSection(state: SessionState): SessionState {
+  if (state.stemSection !== undefined) return state;   // already resolved this turn
+  return { ...state, stemSection: recallStemSection(state.workingDir) };
 }
 
 async function refreshMemoryContext(

@@ -217,6 +217,14 @@ export interface SessionState {
    * persistence, exactly like `recalledLessons`.
    */
   graphSection?: string | null;
+
+  /**
+   * The `### stem` block body: the identity spine (lessons, open work, decisions)
+   * read from `<workingDir>/vault/agent-memory/{LESSONS,OPEN,DECISIONS}.md` once per
+   * turn. `undefined` = not resolved; `null` = no spine on disk, so the block is
+   * omitted. Ephemeral, exactly like `graphSection`.
+   */
+  stemSection?: string | null;
 }
 
 export function createEmptySessionState(params: {
@@ -386,7 +394,8 @@ export function stripEphemeral(state: SessionState): SessionState {
     state.memoryIndex === undefined &&
     state.recalledLessons === undefined &&
     state.recalledProcedures === undefined &&
-    state.graphSection === undefined
+    state.graphSection === undefined &&
+    state.stemSection === undefined
   ) {
     return state;
   }
@@ -396,6 +405,7 @@ export function stripEphemeral(state: SessionState): SessionState {
     recalledLessons: _l,
     recalledProcedures: _p,
     graphSection: _g,
+    stemSection: _s,
     ...rest
   } = state;
   return rest;
