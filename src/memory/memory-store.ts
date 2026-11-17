@@ -322,10 +322,18 @@ export class MemoryStore {
          FROM memories WHERE id = ?`,
     );
     this.countStmt = this.db.prepare(`SELECT COUNT(*) AS count FROM memories`);
+    // 2026-11-17 root fix: eviction deletes by raw SQL, so no canon file goes with
+    // the row. Vault notes score lowest (vote 0, recall 0, oldest mtime) and were
+    // evicted first — 892 at 13:24:42, 891 at 11:23:46 — then vault_sync re-added
+    // each note under a NEW id and wrote a NEW mirror file. Measured: 4760 files
+    // against 1897 rows, 2866 orphans. Rows the vault owns are not the store's to
+    // evict: vault_sync re-creates them anyway, so evicting one is pure duplication.
+    // The runtime may only evict what it created.
+    const evictable = `source NOT IN ('vault','project-doc','git-log','vault-import')`;
     // Legacy FIFO eviction (back-compat: omit eviction options ⇒ same as v1).
     this.evictFifoStmt = this.db.prepare(
       `DELETE FROM memories WHERE id IN (
-         SELECT id FROM memories ORDER BY updated_at ASC, id ASC LIMIT ?
+         SELECT id FROM memories WHERE ${evictable} ORDER BY updated_at ASC, id ASC LIMIT ?
        )`,
     );
     // Utility-weighted eviction. Single SQL statement — cross-phase
@@ -336,7 +344,7 @@ export class MemoryStore {
     // rows still fall through to the utility-recall ladder.
     this.evictUtilityStmt = this.db.prepare(
       `DELETE FROM memories WHERE id IN (
-         SELECT id FROM memories
+         SELECT id FROM memories WHERE ${evictable}
           ORDER BY vote_score ASC,
                    recall_count ASC,
                    COALESCE(last_recalled_at, 0) ASC,
