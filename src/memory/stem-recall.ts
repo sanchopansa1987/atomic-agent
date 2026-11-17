@@ -22,6 +22,36 @@ export const STEM_MAX_TOKENS = 900;
 const STEM_FILES = ["LESSONS.md", "OPEN.md", "DECISIONS.md"] as const;
 
 /**
+ * Per-file budgets, summing under STEM_MAX_TOKENS.
+ *
+ * Measured 2026-11-17: the three files were 4241 bytes ≈ 1060 tokens against a
+ * 900-token cap, so the single shared truncation cut OPEN.md mid-sentence ("#91
+ * — daily self-audit red: read data/self_audit/2026-11-") and DECISIONS.md never
+ * appeared in the prompt at all. The third spine file was dead wiring: the
+ * decisions that define this agent were written every day and shown never.
+ * A file may now be shortened, but no file can starve another, and the last
+ * line kept is a whole line — a half item reads as a fact that is not there.
+ */
+const STEM_FILE_BUDGET: Record<(typeof STEM_FILES)[number], number> = {
+  "LESSONS.md": 420,
+  "OPEN.md": 300,
+  "DECISIONS.md": 170,
+};
+
+/** Keep whole lines only; a cut item is worse than a shorter list. */
+function clampToLines(text: string, maxTokens: number): string {
+  if (estimateTokens(text) <= maxTokens) return text;
+  const kept: string[] = [];
+  for (const line of text.split("\n")) {
+    if (estimateTokens([...kept, line].join("\n")) > maxTokens - 8) break;
+    kept.push(line);
+  }
+  // A single line longer than the whole budget still has to deliver something.
+  if (kept.length === 0) return truncateToTokens(text, maxTokens);
+  return [...kept, "… (cut at the budget)"].join("\n");
+}
+
+/**
  * Read `<workingDir>/vault/agent-memory/{LESSONS,OPEN,DECISIONS}.md` and return the
  * block body, or `null` when none exists. Never throws: a missing or unreadable
  * spine degrades to "no block", like a failed graph read.
@@ -32,7 +62,7 @@ export function recallStemSection(workingDir: string): string | null {
   for (const file of STEM_FILES) {
     try {
       const text = readFileSync(join(dir, file), "utf8").trim();
-      if (text.length > 0) parts.push(text);
+      if (text.length > 0) parts.push(clampToLines(text, STEM_FILE_BUDGET[file]));
     } catch {
       // A missing spine file is not an error — the block carries what exists.
     }
