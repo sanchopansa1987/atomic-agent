@@ -17,16 +17,25 @@ import {
 export type MemorySource = "agent" | "user";
 
 /**
- * Rows the runtime owns. 2026-11-17, two measured failures in one day:
+ * Rows the runtime owns: exactly the rows `MemoryStore.store()` can create, because
+ * it accepts only source 'agent' | 'user' and refuses anything else.
+ *
+ * 2026-11-17, three measured failures in one day:
  *  (a) evicting vault rows deleted notes, and `vault_sync` re-created each under a
  *      new id with a new canon file — 4760 files against 1897 rows, 2866 orphans;
- *  (b) once vault rows were exempt but the cap still counted them, the target was
- *      unreachable and eviction wiped every row it was allowed to touch: 117 agent,
- *      276 trace and 13 session-brief rows in one instant (14:59:28).
- * Both follow from one omission: the cap must be measured over the rows eviction can
- * actually remove, and the vault owns everything else.
+ *  (b) with vault rows exempt but still counted, the cap was unreachable and one
+ *      overflow cleared every row it could touch — 276 trace, 117 agent, 13
+ *      session-brief at 14:59:28, leaving 404 orphan files;
+ *  (c) stress test at 400 inserts, cap 50 and cap 10: vault rows survived every run,
+ *      but the 8 trace/session-brief rows were gone within the first evictions. Those
+ *      rows are written by the python sync, which never bumps `recall_count` or
+ *      `last_recalled_at`, so they lose the utility ranking by construction.
+ *
+ * The cap is one number shared by several owners. A store may only spend its own
+ * budget: `source IN ('agent','user')` is that budget. Everything else — vault notes,
+ * imported docs, traces, session briefs — belongs to the writer that created it.
  */
-const EVICTABLE_SQL = `source NOT IN ('vault','project-doc','git-log','vault-import')`;
+const EVICTABLE_SQL = `source IN ('agent','user')`;
 
 export interface MemoryEntry {
   id: number;
