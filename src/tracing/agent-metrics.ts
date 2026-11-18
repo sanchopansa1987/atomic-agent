@@ -28,11 +28,6 @@ export const METRIC_NAMES = {
   memoryEvictionEvicted: "agent.memory.eviction.evicted",
   memoryClockSkewDetected: "agent.memory.clock_skew_detected",
   // memory-v2 phase 1B
-  memoryEmbeddingsGenerated: "agent.memory.embeddings.generated",
-  memoryEmbeddingsFallback: "agent.memory.embeddings.fallback_to_fts5",
-  memoryEmbeddingsBruteForceOverflow:
-    "agent.memory.embeddings.brute_force_overflow",
-  memoryEmbeddingsDaemonHealth: "agent.memory.embeddings.daemon_health",
   // memory-v2 phase 2
   memoryLinkGenerator: "agent.memory.link_generator",
   memoryLinkGeneratorDuration: "agent.memory.link_generator.duration_ms",
@@ -228,36 +223,8 @@ export interface MemoryClockSkewMetricSample {
   deltaMs: number;
 }
 
-/**
- * Memory-v2 phase 1B embedding-side samples. Kept narrow:
- *   - `Generated` fires once per successful embedding write.
- *   - `Fallback` fires once per recall that degraded to FTS5-only.
- *   - `BruteForceOverflow` fires once per recall that skipped cosine
- *     because the corpus is past the soft ceiling.
- *   - `DaemonHealth` is bootstrap-only and snapshots whether the
- *     second daemon is reachable.
- */
-export interface MemoryEmbeddingsGeneratedSample {
-  model: string;
-  durationMs: number;
-}
-
 export type MemoryEmbeddingsFallbackReason =
   "embed_failed" | "client_missing" | "store_missing" | "feature_disabled";
-
-export interface MemoryEmbeddingsFallbackSample {
-  reason: MemoryEmbeddingsFallbackReason;
-}
-
-export interface MemoryEmbeddingsBruteForceOverflowSample {
-  rows: number;
-  ceiling: number;
-}
-
-export interface MemoryEmbeddingsDaemonHealthSample {
-  outcome: "ok" | "unreachable" | "disabled";
-  model: string | null;
-}
 
 /**
  * Memory-v2 phase 2. Link-generator + expansion samples.
@@ -785,62 +752,9 @@ export class AgentMetrics {
     });
   }
 
-  /**
-   * Memory-v2 phase 1B. Record a successful embedding generation +
-   * persistence. `durationMs` includes both the HTTP round-trip and
-   * the `EmbeddingStore.upsert` call so the histogram surfaces the
-   * full write path latency.
-   */
-  recordMemoryEmbeddingsGenerated(
-    sample: MemoryEmbeddingsGeneratedSample,
-  ): void {
-    this.collector.counter(METRIC_NAMES.memoryEmbeddingsGenerated, 1, {
-      model: sample.model,
-    });
-  }
 
-  /**
-   * Memory-v2 phase 1B. Record a hybrid recall that degraded to
-   * FTS5-only. Tagged by reason so dashboards can distinguish a
-   * transient daemon outage (`embed_failed`) from a permanent
-   * deployment state (`feature_disabled`).
-   */
-  recordMemoryEmbeddingsFallback(sample: MemoryEmbeddingsFallbackSample): void {
-    this.collector.counter(METRIC_NAMES.memoryEmbeddingsFallback, 1, {
-      reason: sample.reason,
-    });
-  }
 
-  /**
-   * Memory-v2 phase 1B. Soft warning: corpus has outgrown the
-   * brute-force cosine path. Cosine is skipped; FTS5 still serves.
-   * Persistent emission of this metric is the signal to wire
-   * `sqlite-vec` or trim the corpus.
-   */
-  recordMemoryEmbeddingsBruteForceOverflow(
-    sample: MemoryEmbeddingsBruteForceOverflowSample,
-  ): void {
-    this.collector.counter(METRIC_NAMES.memoryEmbeddingsBruteForceOverflow, 1, {
-      rows: String(sample.rows),
-      ceiling: String(sample.ceiling),
-    });
-  }
 
-  /**
-   * Memory-v2 phase 1B. Snapshot the embedding daemon's reachability
-   * at bootstrap. One sample per runtime start; the `disabled` outcome
-   * is emitted when the feature flag is off so dashboards can
-   * distinguish "nobody asked for embeddings" from "embeddings asked
-   * but daemon down".
-   */
-  recordMemoryEmbeddingsDaemonHealth(
-    sample: MemoryEmbeddingsDaemonHealthSample,
-  ): void {
-    this.collector.counter(METRIC_NAMES.memoryEmbeddingsDaemonHealth, 1, {
-      outcome: sample.outcome,
-      ...(sample.model ? { model: sample.model } : {}),
-    });
-  }
 
   /**
    * Memory-v2 phase 2. Record a `link-generator` sub-call outcome.

@@ -773,11 +773,12 @@ export interface AtomicAgentConfig {
       maxAgeMs: number;
     };
     /**
-     * Phase 1B: hybrid FTS5 + cosine recall. See
-     * UserConfigFile.memory.embeddings. Default **disabled** — the
-     * runtime only attempts to talk to the embedding daemon when this
-     * flag flips on AND a model is configured AND the daemon is
-     * reachable.
+     * Phase 1B: hybrid FTS5 + cosine recall. **Inert since 2026-11-18**
+     * (issue #131): the cosine arm was deleted after measurement showed it
+     * could only re-rank ids keyword search had already found. These keys are
+     * still parsed so existing user config files keep loading; nothing reads
+     * them. Deleting them is a migration (7 test files + the TUI models tab),
+     * tracked separately rather than half-done here.
      */
     embeddings: {
       enabled: boolean;
