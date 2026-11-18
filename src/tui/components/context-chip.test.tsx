@@ -50,24 +50,23 @@ function label(view: ContextUsageView): string {
 
 describe("ContextChip", () => {
   /**
-   * The bar and the numbers are the same quantity: how full the model's
-   * real context window is.
+   * The bar and the numbers are the same quantity: how full the packed
+   * transcript is against the ceiling it will be packed to.
    *
-   * It used to gauge the transcript against the packer's own ceiling,
-   * which is a real number and the wrong one to lead with. That ceiling
-   * is internal, it moves for reasons the operator did not cause, and it
-   * answers neither of the questions actually being asked at the
-   * composer — is there room for what I am about to send, and has
-   * anything already been forgotten?
+   * The denominator is `agent.conversationMaxTokens` (clamped by the
+   * window inside `computeEffectiveConversationCap`), not the model's
+   * raw window. Gauged against the window instead — 1M on this model
+   * against a 400k budget — the bar sat under 40% all session and never
+   * warned at the moment `packConversation` starts dropping turns.
    */
-  it("gauges the prompt against the model's window, and prints both", () => {
-    expect(label(usage())).toBe(" context [        ]      14.1k/1M");
+  it("gauges the transcript against its cap, and prints both", () => {
+    expect(label(usage())).toBe(" context [==      ]      6.4k/32k cap");
   });
 
-  it("fills as the window fills", () => {
-    expect(label(usage({ percent: 0 }))).toContain("[        ]");
-    expect(label(usage({ percent: 50 }))).toContain("[====    ]");
-    expect(label(usage({ percent: 100 }))).toContain("[========]");
+  it("fills as the cap fills", () => {
+    expect(label(usage({ conversationPercent: 0 }))).toContain("[        ]");
+    expect(label(usage({ conversationPercent: 50 }))).toContain("[====    ]");
+    expect(label(usage({ conversationPercent: 100 }))).toContain("[========]");
   });
 
   /**
@@ -99,20 +98,21 @@ describe("ContextChip", () => {
    */
   it("holds a steady width as the numbers grow", () => {
     const widths = new Set(
-      [90, 6400, 31_900].map((tokens) => label(usage({ tokens })).length),
+      [90, 6400, 31_900].map(
+        (tokens) => label(usage({ conversationTokens: tokens })).length,
+      ),
     );
     expect(widths.size).toBe(1);
   });
 
   /**
-   * With no window published there is no honest scale for it, so the
-   * transcript's own cap is the only one left — and it is labelled, so
-   * the number cannot be mistaken for a window.
+   * Before the first prompt is packed there is no cap to gauge — so the
+   * window is used, unlabeled, because it is a window and not a budget.
    */
-  it("falls back to the transcript cap when the window is unknown", () => {
-    expect(label(usage({ percent: null, contextWindow: null }))).toBe(
-      " context [==      ]      6.4k/32k cap",
-    );
+  it("falls back to the model window when no cap is known yet", () => {
+    expect(
+      label(usage({ conversationCap: null, conversationPercent: null })),
+    ).toBe(" context [        ]      14.1k/1M");
   });
 
   it("shows the raw count when there is no scale at all", () => {
@@ -135,8 +135,9 @@ describe("the chip's ground", () => {
     setActiveTheme(THEMES["classic-dark"]);
     const ground = theme.colors.railBackground;
     const accent = theme.colors.accent;
-    // The ramp follows the bar, and the bar follows the window now.
-    const at = (percent: number): string => groundFor(usage({ percent }));
+    // The ramp follows the bar, and the bar follows the transcript cap now.
+    const at = (percent: number): string =>
+      groundFor(usage({ conversationPercent: percent }));
     expect(at(32)).toBe(mixColor(accent, ground, 0.6));
     expect(at(33)).toBe(mixColor(accent, ground, 0.3));
     expect(at(65)).toBe(mixColor(accent, ground, 0.3));
@@ -163,7 +164,9 @@ describe("the chip's ground", () => {
   it("sits at the quiet end when the fill is unknown", () => {
     setActiveTheme(THEMES["classic-dark"]);
     expect(
-      groundFor(usage({ conversationPercent: null, conversationCap: null })),
+      groundFor(
+        usage({ conversationPercent: null, conversationCap: null, percent: null }),
+      ),
     ).toBe(mixColor(theme.colors.accent, theme.colors.railBackground, 0.6));
   });
 });

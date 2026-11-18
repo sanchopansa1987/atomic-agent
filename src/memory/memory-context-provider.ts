@@ -255,10 +255,10 @@ interface LoadRecalledArgs {
 
 /**
  * Memory-v2 phase 1B. Always goes through `recallHybridAsync` — when
- * embeddings are not attached, the implementation falls through to
- * the same BM25 path as before, so this stays observably identical
- * for phase 1A callers. The async hop is essentially a no-op when
- * the embedding daemon is absent (no fetch is made).
+ * Keyword (BM25) recall. The hybrid cosine arm was removed 2026-11-18:
+ * measured at 9.99% vector coverage it could only re-rank ids the keyword
+ * search had already found, and on the 12-query bench it never promoted a
+ * ground-truth answer (see docs/dsh_prompts/2026-11-18_remove_cosine_half.md).
  */
 async function loadRecalled(
   args: LoadRecalledArgs,
@@ -267,7 +267,7 @@ async function loadRecalled(
   const query = args.query.trim();
   if (query.length === 0) return [];
   try {
-    return await args.store.recallHybridAsync(query, {
+    return args.store.recall(query, {
       k: args.k,
       ...(args.workingDir !== undefined
         ? { scope: "project" as const, workingDir: args.workingDir }

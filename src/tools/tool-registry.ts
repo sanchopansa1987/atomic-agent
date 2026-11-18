@@ -69,11 +69,15 @@ export class ToolNotFoundError extends Error {
  * stringified yields a unique key instead of a shared one — a miss costs one
  * call, a wrong hit costs correctness.
  */
-function memoKey(name: string, args: Record<string, unknown>): string {
+function memoKey(
+  name: string,
+  args: Record<string, unknown>,
+  sessionId: string,
+): string {
   try {
-    return `${name}:${JSON.stringify(args, Object.keys(args).sort())}`;
+    return `${sessionId}:${name}:${JSON.stringify(args, Object.keys(args).sort())}`;
   } catch {
-    return `${name}:${Math.random()}`;
+    return `${sessionId}:${name}:${Math.random()}`;
   }
 }
 
@@ -158,7 +162,13 @@ export class ToolRegistry {
     ctx: ToolContext,
   ): Promise<CompressedToolResult> {
     if (ToolRegistry.MEMO_BREAKERS.has(name)) this.memo.clear();
-    const key = ToolRegistry.MEMO_SAFE.has(name) ? memoKey(name, args) : null;
+    // Session-scoped: the memo used to key on tool+args alone, so a read
+    // admitted (or answered at level 5) in one session was served to a
+    // different session without ever reaching the read-scope check — the
+    // cross-session leak read-scope-approval.test.ts caught.
+    const key = ToolRegistry.MEMO_SAFE.has(name)
+      ? memoKey(name, args, ctx.sessionId)
+      : null;
     if (key) {
       const hit = this.memo.get(key);
       if (hit) return { ...hit, details: { ...hit.details, memo: "reused" } };

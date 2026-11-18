@@ -133,11 +133,7 @@ import {
   type RewriterGate,
 } from "../memory/retrieve/index.js";
 import type { EmbeddingClient } from "../memory/embeddings/embedding-client.js";
-import {
-  EmbeddingStore,
-  EmbeddingWriter,
-  LlamaEmbeddingClient,
-} from "../memory/embeddings/index.js";
+import { LlamaEmbeddingClient } from "../memory/embeddings/index.js";
 import {
   getEmbeddingModelDef,
   isKnownEmbeddingModelId,
@@ -1312,10 +1308,8 @@ export async function createAgentRuntime(
   // The probe runs in the bootstrap critical path with a short
   // timeout so a stale lockfile / stuck daemon cannot wedge the
   // entire startup. Failure is observability-only: we never throw.
-  let embeddingHealth: "ok" | "unreachable" | "disabled" = "disabled";
   let embeddingClient: EmbeddingClient | null = null;
   if (
-    config.memory.embeddings.enabled &&
     config.localModels.embeddings.enabled &&
     config.localModels.embeddings.modelId !== null &&
     isKnownEmbeddingModelId(config.localModels.embeddings.modelId)
@@ -1338,16 +1332,6 @@ export async function createAgentRuntime(
           model: embModelDef.id,
         });
         embeddingClient = client;
-        const embStore = new EmbeddingStore({
-          db: notesStore.getDatabaseHandleForEmbeddings(),
-        });
-        const writer = new EmbeddingWriter({
-          client,
-          store: embStore,
-          metrics,
-        });
-        notesStore.attachEmbeddings({ writer, store: embStore });
-        embeddingHealth = "ok";
       } catch (e) {
         // Construction errors here are pure programmer error
         // (constructor validation): log + degrade, never throw.
@@ -1356,24 +1340,13 @@ export async function createAgentRuntime(
             e instanceof Error ? e.message : String(e)
           }\n`,
         );
-        embeddingHealth = "unreachable";
       }
     } else {
-      embeddingHealth = "unreachable";
       process.stderr.write(
         `memory-v2 phase 1B: embedding daemon at ${embUrl} is unreachable; ` +
           `hybrid recall disabled, FTS5-only path active.\n`,
       );
     }
-    metrics.recordMemoryEmbeddingsDaemonHealth({
-      outcome: embeddingHealth,
-      model: embModelDef.id,
-    });
-  } else {
-    metrics.recordMemoryEmbeddingsDaemonHealth({
-      outcome: "disabled",
-      model: null,
-    });
   }
 
   // Memory-v2 phase 2. The link graph store rides the same memory.sqlite

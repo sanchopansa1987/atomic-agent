@@ -30,6 +30,12 @@ interface RunArgs {
   workingDir: string;
   maxSteps: number | null;
   noApproval: boolean;
+  /**
+   * Continue an existing session instead of minting one. A Telegram chat that
+   * maps to one session needs this: `createSession()` per invocation made every
+   * message its own thread, so the agent had no memory of the previous line.
+   */
+  sessionId: string | null;
 }
 
 const HELP =
@@ -45,6 +51,7 @@ const HELP =
     "  --working-dir <dir>  Alias for --cwd",
     "  --max-steps <n>      Hard step ceiling for one task (default: agent.task.maxSteps)",
     "  --no-approval        Force approval level 5: auto-approve every dangerous tool call",
+    "  --session <id>       Continue an existing session instead of starting a new one",
     "",
     "In-session:  /quit exits · /abort cancels the current turn",
     "Exit codes:  0 replied · 1 failed · 2 usage error",
@@ -56,6 +63,7 @@ function parseArgs(
   let workingDir: string | null = null;
   let maxSteps: number | null = null;
   let noApproval = false;
+  let sessionId: string | null = null;
   for (let i = 0; i < args.length; i += 1) {
     const flag = args[i];
     switch (flag) {
@@ -91,6 +99,12 @@ function parseArgs(
         maxSteps = parsed;
         break;
       }
+      case "--session": {
+        const value = args[++i];
+        if (!value) return { error: "--session requires a session id" };
+        sessionId = value;
+        break;
+      }
       case "--no-approval":
         noApproval = true;
         break;
@@ -102,6 +116,7 @@ function parseArgs(
     workingDir: workingDir ?? process.cwd(),
     maxSteps,
     noApproval,
+    sessionId,
   };
 }
 
@@ -477,7 +492,20 @@ export async function runAgentCommand(args: string[]): Promise<number> {
       output: process.stderr,
       terminal: process.stdin.isTTY === true,
     });
-    const session = runtime.createSession();
+    const session =
+      parsed.sessionId === null
+        ? runtime.createSession()
+        : (() => {
+            const loaded = runtime.sessionStore.load(parsed.sessionId);
+            if (loaded === null) {
+              // Fail loudly: silently minting a fresh session would look like
+              // continuity while every earlier turn had vanished.
+              throw new Error(
+                `--session ${parsed.sessionId}: no such session in the store`,
+              );
+            }
+            return loaded;
+          })();
     const finalSession = await runChatLoop({
       input: chatInput,
       runtime,

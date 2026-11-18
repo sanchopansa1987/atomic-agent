@@ -201,11 +201,23 @@ describe("checkShellCommandGuard", () => {
     ["dd", ["if=/dev/zero", "of=/dev/sda"], "hardline.dd_block"],
     ["bash", ["-c", ":(){ :|:& };:"], "hardline.fork_bomb"],
     ["shutdown", ["-h", "now"], "hardline.shutdown"],
+    ["bash", ["-lc", "reboot"], "hardline.shutdown"],
   ])("blocks catastrophic command %s %j", (cmd, rawArgs, rule) => {
     expect(guard(cmd, rawArgs)).toMatchObject({
       action: "block",
       rule,
     });
+  });
+
+  // Regression: the power verbs used to match anywhere in the joined command,
+  // so read-only evidence gathering was refused as a host power state change.
+  it.each([
+    ["echo", ["=== REBOOT DURABILITY ==="]],
+    ["docker", ["inspect", "-f", "restart=unless-stopped", "canonical-sql"]],
+    ["grep", ["-c", "shutdown", "docs/HANDOFF.md"]],
+    ["echo", ["reboot the daemon after the migration"]],
+  ])("does not block a read-only mention of a power verb: %s %j", (cmd, rawArgs) => {
+    expect(guard(cmd, rawArgs).rule).not.toBe("hardline.shutdown");
   });
 
   it.each([

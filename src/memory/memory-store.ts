@@ -6,13 +6,6 @@ import { dirname } from "node:path";
 import type { AgentMetrics } from "../tracing/agent-metrics.js";
 
 import { applyMigrations } from "./memory-schema.js";
-import type { EmbeddingStore } from "./embeddings/embedding-store.js";
-import type { EmbeddingWriter } from "./embeddings/embedding-writer.js";
-import {
-  recallHybrid,
-  type HybridRecallDeps,
-  type HybridRecallInputEntry,
-} from "./embeddings/hybrid-recall.js";
 
 export type MemorySource = "agent" | "user";
 
@@ -103,29 +96,6 @@ export interface MemoryStoreOptions {
    * if tests assert temporal ordering.
    */
   now?: () => number;
-  /**
-   * Memory-v2 phase 1B. Optional embedding plumbing. When all three
-   * are provided AND the daemon is reachable, `store()` will write a
-   * vector to `memory_embeddings` and `recallAsync()` blends BM25
-   * with cosine via `HybridRecall`. Any of these missing ⇒ FTS5-only
-   * recall (graceful fallback).
-   *
-   * `embeddingStore` is opened by the caller against the **same**
-   * SQLite handle as `MemoryStore` so the cascade `ON DELETE CASCADE`
-   * from `memories(id)` fires automatically on memory removal. The
-   * `MemoryStore` exposes its handle via `getDatabaseHandleForEmbeddings()`
-   * for bootstrap; tests typically open it themselves.
-   */
-  embeddings?: {
-    writer: EmbeddingWriter;
-    store: EmbeddingStore;
-    /** 0..1 weight for normalised BM25. Defaults to 0.5. */
-    fts5Weight?: number;
-    /** 0..1 weight for cosine. Defaults to 0.5. */
-    vectorWeight?: number;
-    /** Brute-force cosine ceiling. Default 200 — matches MEMORY_FABRIC_V2.md §13.7.1. */
-    bruteForceCeiling?: number;
-  };
 }
 
 export interface MemoryStoreInput {
@@ -268,11 +238,6 @@ export class MemoryStore {
   private readonly dedupThreshold: number;
   private readonly evictionUtilityWeighted: boolean;
   private readonly metrics: AgentMetrics | undefined;
-  private embeddingWriter: EmbeddingWriter | undefined;
-  private embeddingStore: EmbeddingStore | undefined;
-  private readonly embeddingFts5Weight: number;
-  private readonly embeddingVectorWeight: number;
-  private readonly embeddingBruteForceCeiling: number;
   private readonly now: () => number;
   private readonly insertStmt: Database.Statement;
   private readonly deleteStmt: Database.Statement;
@@ -322,12 +287,6 @@ export class MemoryStore {
     // then the field stays out of `MemoryStore` so TypeScript does not
     // flag dead state.
     this.metrics = options.metrics;
-    this.embeddingWriter = options.embeddings?.writer;
-    this.embeddingStore = options.embeddings?.store;
-    this.embeddingFts5Weight = options.embeddings?.fts5Weight ?? 0.5;
-    this.embeddingVectorWeight = options.embeddings?.vectorWeight ?? 0.5;
-    this.embeddingBruteForceCeiling =
-      options.embeddings?.bruteForceCeiling ?? 200;
     this.now = options.now ?? Date.now;
     this.insertStmt = this.db.prepare(
       `INSERT INTO memories
@@ -462,18 +421,6 @@ export class MemoryStore {
     const id = Number(result.lastInsertRowid);
     this.evictOverflow();
 
-    // Memory-v2 phase 1B. Fire-and-forget embedding write. We do NOT
-    // await this in the synchronous `store()` path so existing
-    // callers (`memory.notes.store` tool handler, `reflection-runner`)
-    // keep their current latency profile. `EmbeddingWriter.writeFor`
-    // is itself error-swallowing — failures land in a metric counter,
-    // never as a thrown error. Tests that need to assert the
-    // embedding is on disk before continuing should call
-    // `storeAsync()` instead, which awaits the write.
-    if (this.embeddingWriter) {
-      void this.embeddingWriter.writeFor(id, content);
-    }
-
     return {
       id,
       content,
@@ -486,31 +433,6 @@ export class MemoryStore {
       recallCount: 0,
       lastRecalledAt: null,
     };
-  }
-
-  /**
-   * Memory-v2 phase 1B. Async sibling of `store()` that awaits the
-   * embedding write before returning. Used by tests and any future
-   * caller that wants the just-inserted row to be hybrid-recallable
-   * on the very next turn — without this guarantee, there is a
-   * (small) race between insert and embed during a fast back-to-back
-   * `store ⇒ recall` sequence.
-   *
-   * Identical semantics to `store()` when embeddings are not attached.
-   */
-  async storeAsync(
-    input: MemoryStoreInput,
-    now: number = this.now(),
-  ): Promise<MemoryEntry> {
-    const entry = this.store(input, now);
-    if (this.embeddingWriter) {
-      // `store()` already kicked off a fire-and-forget. We could
-      // dedup but the embedding daemon is the bottleneck — a second
-      // call is cheap relative to the model inference. Simpler to
-      // re-call and let `UPSERT` handle it.
-      await this.embeddingWriter.writeFor(entry.id, entry.content);
-    }
-    return entry;
   }
 
   /**
@@ -1001,11 +923,9 @@ export class MemoryStore {
   }
 
   /**
-   * Memory-v2 phase 1B. Returns the live `better-sqlite3` handle so
-   * bootstrap can construct an `EmbeddingStore` against the **same**
-   * connection (FK cascade depends on it). Intentionally not narrowed
-   * to a subset interface — callers should pass the result straight
-   * through to `new EmbeddingStore({ db })`.
+   * Returns the live `better-sqlite3` handle so bootstrap can open the
+   * link and vote stores against the **same** connection. Intentionally not
+   * narrowed to a subset interface.
    *
    * Do not stash a reference outside the runtime: the handle's
    * lifetime is owned by `MemoryStore` and dies with `close()`.
@@ -1014,153 +934,6 @@ export class MemoryStore {
     return this.db as unknown as import("better-sqlite3").Database;
   }
 
-  /**
-   * Memory-v2 phase 1B. Late binding for the embedding plumbing.
-   * Bootstrap opens the `MemoryStore` first (which owns the SQLite
-   * handle and runs migrations), then — once the embedding daemon's
-   * health is confirmed — constructs `EmbeddingStore` + `Writer`
-   * against the **same** handle and calls this. This avoids a chicken-
-   * and-egg dependency where the store would need to be re-created
-   * just to add the embedding side.
-   *
-   * Idempotent: re-attaching after a daemon hot-swap (e.g. operator
-   * runs `models stop && models start` with a different embedding
-   * model) simply replaces the writer/store.
-   */
-  attachEmbeddings(args: {
-    writer: EmbeddingWriter;
-    store: EmbeddingStore;
-  }): void {
-    this.embeddingWriter = args.writer;
-    this.embeddingStore = args.store;
-  }
-
-  detachEmbeddings(): void {
-    this.embeddingWriter = undefined;
-    this.embeddingStore = undefined;
-  }
-
-  /**
-   * Memory-v2 phase 1B. Fire-and-forget embedding write. Idempotent:
-   * the underlying `UPSERT` handles re-embeds when the model is
-   * upgraded. Always non-throwing — see `EmbeddingWriter` doc.
-   *
-   * Public so the bootstrap-time backfill path (re-embed legacy v3
-   * rows) can iterate the corpus without going through `store()`.
-   */
-  async writeEmbeddingFor(memoryId: number, content: string): Promise<boolean> {
-    if (!this.embeddingWriter) return false;
-    return this.embeddingWriter.writeFor(memoryId, content);
-  }
-
-  /**
-   * Memory-v2 phase 1B. Hybrid recall: BM25 + cosine blend. When
-   * embeddings are not wired (no client / no store / disabled), this
-   * is observably identical to `recall(query, opts)` — same hits,
-   * same order, same `recall_count` bump.
-   *
-   * Async because the embedding client makes an HTTP round-trip.
-   * Callers that cannot await (legacy synchronous paths) should keep
-   * calling `recall()` directly — they will simply miss the cosine
-   * re-ranking.
-   */
-  async recallHybridAsync(
-    query: string,
-    opts: MemoryRecallOptions = {},
-  ): Promise<MemoryEntry[]> {
-    const normalizedQuery = validateQuery(query);
-    const ftsQuery = buildFtsQuery(normalizedQuery);
-    if (ftsQuery.length === 0) return [];
-    const k = clampPositiveInt(
-      opts.k ?? MEMORY_RECALL_DEFAULT_K,
-      1,
-      MEMORY_RECALL_MAX_K,
-      "k",
-    );
-    const scope = opts.scope ?? "all";
-    const requiredTags = validateTags(opts.tags);
-    let workingDir: string | null | undefined;
-    if (scope === "project") {
-      const dir = validateOptionalString(opts.workingDir, "workingDir");
-      if (dir === null) return [];
-      workingDir = dir;
-    }
-
-    const bm25Hits = this.recallRaw(
-      ftsQuery,
-      workingDir ?? null,
-      requiredTags,
-      k * 4,
-    );
-    if (!this.embeddingWriter || !this.embeddingStore) {
-      // No hybrid wiring — return BM25 top-K and bump recall_count
-      // the same way `recall()` does.
-      const sliced = bm25Hits.slice(0, k);
-      if (sliced.length > 0) this.touchOnRecall(sliced);
-      return sliced;
-    }
-    const deps: HybridRecallDeps = {
-      embeddingClient: this.embeddingWriter.client,
-      embeddingStore: this.embeddingStore,
-      bruteForceCeiling: this.embeddingBruteForceCeiling,
-      fts5Weight: this.embeddingFts5Weight,
-      vectorWeight: this.embeddingVectorWeight,
-      ...(this.metrics ? { metrics: this.metrics } : {}),
-    };
-    const blended = await recallHybrid(deps, {
-      k,
-      bm25Hits,
-      query: normalizedQuery,
-      ...(workingDir !== undefined ? { workingDir } : {}),
-      requiredTags,
-    });
-    if (blended.length > 0) this.touchOnRecall(blended);
-    return blended;
-  }
-
-  /**
-   * Internal BM25-only fetch used by both `recall` and
-   * `recallHybridAsync`. Returns the raw `bm25Score` alongside the
-   * `MemoryEntry` so the hybrid layer can blend without a second
-   * round-trip. No `recall_count` touch here — callers do that after
-   * the final slice is selected.
-   */
-  private recallRaw(
-    ftsQuery: string,
-    workingDir: string | null,
-    requiredTags: readonly string[],
-    limit: number,
-  ): HybridRecallInputEntry[] {
-    const where: string[] = [`memories_fts MATCH ?`];
-    const params: unknown[] = [ftsQuery];
-    if (workingDir !== null) {
-      where.push(`m.working_dir = ?`);
-      params.push(workingDir);
-    }
-    const sql = `
-      SELECT m.id, m.content, m.created_at, m.updated_at,
-             m.source, m.session_id, m.working_dir, m.tags,
-             m.recall_count, m.last_recalled_at,
-             bm25(memories_fts) AS bm25
-        FROM memories_fts
-        JOIN memories m ON m.id = memories_fts.rowid
-       WHERE ${where.join(" AND ")}
-       ORDER BY bm25 ASC
-       LIMIT ?`;
-    params.push(limit);
-    type RawRow = MemoryRow & { bm25: number };
-    const rows = this.db.prepare(sql).all(...params) as RawRow[];
-    const filtered =
-      requiredTags.length === 0
-        ? rows
-        : rows.filter((r) =>
-            requiredTags.every((t) => parseTags(r.tags).includes(t)),
-          );
-    return filtered.map((r) => ({
-      ...rowToEntry(r),
-      bm25Score: r.bm25,
-    }));
-  }
 
   private evictOverflow(): void {
     // Measure the cap over the rows eviction may actually remove. With the vault's

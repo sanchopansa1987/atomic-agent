@@ -209,6 +209,31 @@ describe("ProfileStore (bi-temporal phase 4)", () => {
     expect(chain[1]?.keywords).toEqual(["deploy", "ship"]);
   });
 
+  it("superseded rows drop `pinned` — the ghost-pin defect (measured 2026-11-04)", () => {
+    // Reverse-engineered from a live defect: supersession set `superseded_by` but
+    // never cleared `pinned`, so every rewrite of a pinned key left a dead row that
+    // any naive `where pinned=1` count read as a second active pin. Live damage:
+    // 5 duplicate pinned keys, 7 "pinned fact carries a supersession" identity
+    // invariant failures, and a pinned count inflated from 52 to 60.
+    h.store.set("stance_x", "v1", 1_000);
+    h.store.set("stance_x", "v2", 2_000);
+    const db = new DatabaseCtor(join(h.dir, "memory.sqlite"));
+    try {
+      const rows = db
+        .prepare(
+          `SELECT value, pinned FROM profile_facts
+            WHERE key = 'stance_x' ORDER BY id ASC`,
+        )
+        .all() as Array<{ value: string; pinned: number }>;
+      expect(rows.length).toBe(2);
+      expect(rows[0]?.value).toBe("v1");
+      expect(rows[0]?.pinned).toBe(0); // a dead row must not claim a pin
+      expect(rows[1]?.pinned).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("legacy v3 row migrates to v7 with valid_from = updated_at and active state", () => {
     // Build a synthetic pre-v7 state with a populated profile_facts.
     h.store.close();

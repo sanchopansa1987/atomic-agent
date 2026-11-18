@@ -148,7 +148,11 @@ describe("a read outside the scope asks through the ladder", () => {
     expect((await read(solution)).status).toBe("ok");
     gate.setLevel(1);
     expect((await read("src/main.ts")).status).toBe("ok");
-    expect((await read(solution, ctx("s-plain", [elsewhere]))).status).toBe("ok");
+    // A different path under the user-named root: re-reading `solution` here
+    // would be served from the session memo and prove nothing about the scope.
+    expect(
+      (await read(join(elsewhere, "named.js"), ctx("s-plain", [elsewhere]))).status,
+    ).toBe("ok");
     expect(prompts).toHaveLength(0);
     expect(innerReads).toBe(3);
   });

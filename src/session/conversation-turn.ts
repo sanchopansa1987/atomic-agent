@@ -228,6 +228,14 @@ const KEEP_PATTERN_TOOLS: ReadonlySet<string> = new Set([
  */
 const TOOL_RESULT_HISTORY_CAP_CHARS = 4000;
 /**
+ * `os.http.request` keeps the older 400-char history cap. Its body is a whole
+ * response dump — JSON or HTML that costs ~1000 tokens as a 4000-char fragment
+ * and answers nothing a stale turn still needs; `os.shell.run` was the tool the
+ * 4000 raise was measured for (command output you re-read), and diff tools are
+ * exempted above. Same split the file already makes per tool, one constant.
+ */
+const HTTP_HISTORY_CAP_CHARS = 400;
+/**
  * Read results age to a `capReadSummary` preview in history. 2000 was too
  * small in practice: a 126-line source file came back as 43 lines once the
  * macro-turn closed, and the rest read as data loss rather than as a preview.
@@ -346,7 +354,9 @@ function renderToolResultPreview(
       turn.summary,
       DIFF_TOOLS_HISTORY_FULL.has(turn.tool)
         ? TOOL_RESULT_RENDER_CAP_CHARS
-        : TOOL_RESULT_HISTORY_CAP_CHARS,
+        : turn.tool === "os.http.request"
+          ? HTTP_HISTORY_CAP_CHARS
+          : TOOL_RESULT_HISTORY_CAP_CHARS,
     );
   }
   // The orchestrator's review input. A fan-out report runs past the generic

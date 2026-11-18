@@ -37,6 +37,33 @@ describe("detectCheckClaims", () => {
     expect(detectCheckClaims("Here is the file. Run the tests when you like.")).toEqual([]);
     expect(detectCheckClaims("The build step is next; nothing checked yet.")).toEqual([]);
   });
+
+  it("flags a bare figure as a claim, but not a year", () => {
+    expect(detectCheckClaims("Memory holds 3282 notes.")).toEqual([
+      { kind: "numbers", text: "3282" },
+    ]);
+    expect(detectCheckClaims("In 2026 we ship.")).toEqual([]);
+  });
+});
+
+describe("numbers claim — stress and reverse stress", () => {
+  it("stress: fires on a real figure quoted with nothing behind it", () => {
+    expect(detectCheckClaims("Memory holds 3282 notes.")).toEqual([{ kind: "numbers", text: "3282" }]);
+    expect(detectCheckClaims("775 vault notes are indexed.")).toEqual([{ kind: "numbers", text: "775" }]);
+    expect(detectCheckClaims("The wipe deleted 2483 rows.")).toEqual([{ kind: "numbers", text: "2483" }]);
+  });
+
+  it("reverse: does not fire on a year, a time, or two-digit numbers", () => {
+    expect(detectCheckClaims("In 2026 we ship.")).toEqual([]);
+    expect(detectCheckClaims("The date is 2026-11-15.")).toEqual([]);
+    expect(detectCheckClaims("It is 10:00 now.")).toEqual([]);
+    expect(detectCheckClaims("conf 85% and I am done.")).toEqual([]);
+  });
+
+  it("reverse: does not fire on a percentage or a thousands separator", () => {
+    expect(detectCheckClaims("This is 100% done.")).toEqual([]);
+    expect(detectCheckClaims("Roughly 1,000 items.")).toEqual([]);
+  });
 });
 
 describe("claimHasEvidence", () => {

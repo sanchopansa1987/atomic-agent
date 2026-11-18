@@ -195,9 +195,17 @@ export class ProfileStore {
          (@key, @value, @pinned, @keywords, @valid_from, NULL,
           @supersedes, @created_at, @updated_at)`,
     );
+    // Reverse-engineered 2026-11-04: supersession only set `superseded_by`, never
+    // cleared `pinned`. Every rewrite of a pinned key therefore left a dead row still
+    // flagged pinned=1 — 5 duplicate pinned keys and 7 "pinned fact carries a
+    // supersession" violations accumulated in one session of stance edits, and the
+    // identity ledger's counts (60 pinned) were inflated ghosts. A dead row can never
+    // render (active = `superseded_by IS NULL`), so `pinned` on it is a lie to any
+    // naive query; clear it at the same moment the row dies.
     this.markSupersededStmt = this.db.prepare(
       `UPDATE profile_facts
           SET superseded_by = @new_id,
+              pinned = 0,
               updated_at = @now
         WHERE id = @id`,
     );

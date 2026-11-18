@@ -53,9 +53,42 @@ describe("project workflow", () => {
   });
   it("rejects failed, denied and pending evidence", () => {
     const dir = root();
-    for (const attempts of [done(graft, "error"), done(graft, "ok", "exit: 1"), done(graft).slice(0, 1)]) {
+    // `done(graft, "ok", "exit: 1")` used to be a case here. It is unreachable:
+    // shell-result.ts:136 derives `status` from the exit code
+    // (`exitCode === 0 ? "ok" : "error"`), so an ok result never carries a
+    // failing exit. The fixture was really asserting "read the exit out of the
+    // summary text", which the compressor rewrites — that assertion is what made
+    // every later turn re-demand the prerequisites.
+    for (const attempts of [done(graft, "error"), done(graft).slice(0, 1)]) {
       expect(projectWorkflowGuard(dir, [user(), ...done(memory), ...attempts])!(read)).toContain("graft ask");
     }
+  });
+  it("spares inspection probes the prerequisite batch but gates mutators", () => {
+    const dir = root();
+    const probe: ToolCallPayload = { tool: "os.shell.run", args: { cmd: "launchctl", args: ["print", "gui/501/com.kst.atomic-tg-bridge"] } };
+    expect(projectWorkflowGuard(dir, [user()])!(probe)).toBeNull();
+    // `git status` used to be in the gated list: the guard classified by binary
+    // name, so it charged a read as a write (audit 2026-11-04, defect 4).
+    expect(projectWorkflowGuard(dir, [user()])!({ tool: "os.shell.run", args: { cmd: "git", args: ["status"] } })).toBeNull();
+    expect(projectWorkflowGuard(dir, [user()])!({ tool: "os.shell.run", args: { cmd: "git", args: ["rm", "a.py"] } })).toContain("memory");
+    for (const gated of [
+      { tool: "os.shell.run", args: { cmd: "python3", args: ["-c", "pass"] } },
+      { tool: "os.shell.run", args: { cmd: "cat", args: ["src/agent/project-workflow.ts"] } },
+    ] as ToolCallPayload[]) expect(projectWorkflowGuard(dir, [user()])!(gated)).toContain("memory");
+  });
+  it("counts a prerequisite whose summary the compressor elided", () => {
+    const dir = root();
+    // The invariant, expressed behaviourally: compliance may depend only on
+    // `turn.status`. An empty summary is what compaction leaves behind, and it
+    // must not resurrect a completed prerequisite. This is the regression guard
+    // for the prose-derived control flow that cost two model rounds per turn.
+    const elided: ConversationTurn[] = [
+      { kind: "assistant_tool_call", ...memory, at: 2 },
+      { kind: "tool_result", tool: memory.tool, status: "ok", summary: "", at: 3 },
+    ];
+    const check = projectWorkflowGuard(dir, [user(), ...elided])!;
+    expect(check(read)).toContain("graft ask");
+    expect(check(read)).not.toContain("atomic_memory.py");
   });
   it("carries satisfied prerequisites across turn boundaries", () => {
     const dir = root();
@@ -111,7 +144,11 @@ describe("project workflow", () => {
     expect(check({ tool: "os.fs.glob", args: { pattern: "**/*.ts" } })).toContain("graft");
     expect(check({ tool: "os.fs.glob", args: { pattern: ["docs/*.md", "src/index.ts"] } })).toContain("graft");
     expect(check({ tool: "os.fs.glob", args: { pattern: ["docs/*.md"] } })).toBeNull();
-    expect(check({ tool: "os.fs.grep", args: { pattern: "symbol" } })).toContain("graft");
+    // A grep is priced by its scope, like a read. Gating every grep gave the same
+    // docs file two different prices depending on which tool opened it
+    // (audit 2026-11-04, defect 5).
+    expect(check({ tool: "os.fs.grep", args: { pattern: "symbol" } })).toBeNull();
+    expect(check({ tool: "os.fs.grep", args: { pattern: "symbol", glob: "**/*.ts" } })).toContain("graft");
   });
   it("never invokes blocked targets, and retains normal approvals for allowed calls", async () => {
     const dir = root(); const target = vi.fn(); const approved = vi.fn(async () => ({ tool: "os.fs.write", status: "error" as const, summary: "approval denied", details: {}, truncated: false }));
@@ -133,5 +170,52 @@ describe("project workflow", () => {
     await executeBatch(toBatchInputs([graft, read]), reg, { workingDir: dir, sessionId: "test", stepIndex: 1,
       signal: new AbortController().signal, workflowGuard: projectWorkflowGuard(dir, [user(), ...done(memory)])! });
     expect(target).not.toHaveBeenCalled();
+  });
+});
+
+// Regressions for the 2026-11-04 audit (docs/AUDIT_2026-11-04_project-workflow-guard.md).
+describe("guard defects found by the 2026-11-04 audit", () => {
+  it("does not let a mention of ensure-stack.sh wave a source deletion through", () => {
+    const dir = root();
+    // defect 1: prerequisite() ran before the classification and accepted any
+    // token containing the script name, so this ran with zero prerequisites.
+    const mixed: ToolCallPayload = { tool: "os.shell.run", args: { cmd: "rm", args: ["-rf", "src/x.ts", "~/mcp-stack/ensure-stack.sh"] } };
+    expect(projectWorkflowGuard(dir, [user()])!(mixed)).toContain("memory");
+    // ... and naming the script is not running it: no `stack` credit, so the
+    // mutation stays blocked on exactly that prerequisite.
+    const named: ToolCallPayload = { tool: "os.shell.run", args: { cmd: "cat", args: ["~/mcp-stack/ensure-stack.sh"] } };
+    const turns = [user(), ...done(memory), ...done(graft), ...done(ponytail), ...done(named)];
+    expect(projectWorkflowGuard(dir, turns)!(write)).toContain("stack");
+  });
+  it("gates deleting a source file as a mutation", () => {
+    // defect 2: write/edit/patch were the whole list, so the one irreversible
+    // operation needed no prerequisites at all.
+    const dir = root();
+    const del: ToolCallPayload = { tool: "os.fs.trash", args: { paths: ["a.py"] } };
+    expect(projectWorkflowGuard(dir, [user()])!(del)).toContain("memory");
+    expect(projectWorkflowGuard(dir, ready())!(del)).toBeNull();
+  });
+  it("names a prerequisite that ran and came back not-ok", () => {
+    // defect 3: a crashed prerequisite was re-demanded as "never run".
+    const dir = root();
+    const check = projectWorkflowGuard(dir, [user(), ...done(memory), ...done(graft, "error")])!;
+    expect(check(read)).toContain("came back not-ok");
+    expect(check(read)).toContain("graft (error)");
+  });
+  it("hands back one batched command so a refusal cannot ladder", () => {
+    // defect 7: the refusal listed memory, graft and stack as three separate prose
+    // fragments, so a retry that did exactly what it showed satisfied one and was
+    // refused for the next — one extra model round per prerequisite (s-461b9d5d
+    // 15:46:22 memory, 15:46:33 graft).
+    const dir = root();
+    const message = projectWorkflowGuard(dir, [user()])!(write)!;
+    const script = message.match(/bash -lc '([^']+)'/)?.[1];
+    expect(script, "the refusal must hand back a runnable batched command").toBeTruthy();
+    // Carrying out ONLY that one command satisfies every shell prerequisite at once:
+    // one round, not one per prerequisite (the 15:46:22 memory / 15:46:33 graft
+    // ladder). ponytail is a tool call and cannot ride in a shell line, so it stays.
+    const batch: ToolCallPayload = { tool: "os.shell.run", args: { cmd: "bash", args: ["-lc", script!] } };
+    const after = projectWorkflowGuard(dir, [user(), ...done(batch)])!(write)!;
+    expect(after).toMatch(/^Project workflow: ponytail not satisfied yet/);
   });
 });

@@ -136,6 +136,26 @@ export function agentArgv(input: TerminalLaunchInput): readonly string[] {
 }
 
 /**
+ * The argv that re-execs this process unchanged (self-update, `/restart`).
+ * `process.execArgv` has to ride along: a dev run started as
+ * `node --import tsx/dist/loader.mjs src/cli/index.ts` becomes a bare
+ * `node … index.ts` once the flags are dropped, and node v22.11 dies with
+ * `ERR_UNKNOWN_FILE_EXTENSION ".ts"` before the CLI prints one line
+ * (measured 2026-11-16: a restart that never came back).
+ */
+export function relaunchArgv(input: {
+  readonly argv: readonly string[];
+  readonly execArgv?: readonly string[];
+  readonly isSea: boolean;
+}): readonly string[] {
+  // SEA prepends an extra argv slot, so real user args start at index 2
+  // (see userArgsFromArgv in cli/index.ts); plain node keeps the script path
+  // at index 1.
+  const userArgs = input.isSea ? input.argv.slice(2) : input.argv.slice(1);
+  return [...(input.execArgv ?? []), ...userArgs];
+}
+
+/**
  * A freshly spawned terminal starts a login shell and does **not**
  * inherit our environment, so a non-default state dir has to travel
  * inside the command line — otherwise the second window silently talks

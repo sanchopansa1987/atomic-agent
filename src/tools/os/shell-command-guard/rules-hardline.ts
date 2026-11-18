@@ -41,7 +41,13 @@ const HARDLINE_PATTERNS: readonly PatternRule[] = [
   },
   {
     id: "hardline.shutdown",
-    regex: /\b(?:shutdown|reboot|halt|poweroff)\b/,
+    // Command position only: start of the command, after a shell separator, or
+    // straight after a `<shell> -c` wrapper. The word-anywhere form blocked
+    // read-only evidence gathering — `echo '=== REBOOT DURABILITY ==='` and
+    // `docker inspect -f restart=…` were both refused as a host power state
+    // change, which is why this container's durability was never observed live.
+    regex:
+      /\b(?:ba|z|da)?sh\s+-[a-z]*c\s+(?:sudo\s+|doas\s+)?(?:shutdown|reboot|halt|poweroff)\b|(?:^|[;&|(])\s*(?:sudo\s+|doas\s+)?(?:shutdown|reboot|halt|poweroff)\b/,
     reason: "host power state change",
   },
   {

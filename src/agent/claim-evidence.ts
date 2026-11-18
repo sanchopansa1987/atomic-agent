@@ -24,7 +24,7 @@ import type { ConversationTurn } from "../session/conversation-turn.js";
  * operator ran gets a needless notice at worst, never a blocked turn.
  */
 
-export type CheckClaimKind = "node-check" | "tests" | "verified" | "lint" | "build";
+export type CheckClaimKind = "node-check" | "tests" | "verified" | "lint" | "build" | "numbers";
 
 export interface CheckClaim {
   kind: CheckClaimKind;
@@ -53,6 +53,11 @@ const CLAIM_PATTERNS: ReadonlyArray<{ kind: CheckClaimKind; re: RegExp }> = [
   { kind: "tests", re: /\btests?\s+(?:pass|passed)\b/i },
   { kind: "tests", re: /\bran\s+(?:the\s+)?tests\b/i },
   { kind: "verified", re: /\bverified\b/i },
+  // A bare figure (>=100) the reply states with no run behind it — the "775
+  // notes" class, the most-repeated failure (2026-11-15). Years are filtered
+  // below; percentages and thousands/decimals are excluded so "100% done" and
+  // "1,000" (and "0.001") don't fire. A wrong hit is a warn-once, never a block.
+  { kind: "numbers", re: /\b(?<![\d,.])\d{3,}\b(?!%)/ },
   { kind: "lint", re: /\blint(?:ed)?\s+passes\b/i },
   { kind: "build", re: /\bbuilds?\s+(?:cleanly|passes)\b/i },
 ];
@@ -66,6 +71,7 @@ const EVIDENCE: Readonly<Record<CheckClaimKind, RegExp>> = {
   "node-check": /\bnode(?:\.exe)?\s+(?:[^\s]+\s+)*?(?:--check|-c)\b/i,
   tests: /\b(?:tests?|vitest|jest|mocha|pytest|unittest|spec|cargo\s+test|go\s+test)\b/i,
   verified: /\S/,
+  numbers: /\S/,
   lint: /\b(?:lint|eslint|ruff|flake8|pylint|clippy|golangci-lint|biome)\b/i,
   build: /\b(?:build|tsc|make|cargo\s+build|go\s+build|webpack|vite|esbuild|compile|gradle|mvn)\b/i,
 };
@@ -76,6 +82,8 @@ export function detectCheckClaims(replyText: string): CheckClaim[] {
   for (const { kind, re } of CLAIM_PATTERNS) {
     const match = re.exec(replyText);
     if (match === null) continue;
+    // A year is not a measured quantity; "in 2026 we ship" must not warn.
+    if (kind === "numbers" && /^(?:19|20)\d{2}$/.test(match[0])) continue;
     const existing = found.get(kind);
     if (existing === undefined || match.index < existing.at) {
       found.set(kind, { claim: { kind, text: match[0] }, at: match.index });

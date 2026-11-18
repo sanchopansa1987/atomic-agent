@@ -53,6 +53,7 @@ import {
   currentTerminalLaunchInput,
   openAgentTerminalWindow,
 } from "./open-terminal-window.js";
+import { relaunchArgv } from "./build-terminal-launch.js";
 import { openUrlInBrowser } from "./open-url.js";
 import { detectKittyKeyboard } from "./detect-kitty-keyboard.js";
 import { setShiftEnterNewline } from "./shift-enter-support.js";
@@ -891,9 +892,15 @@ export async function tuiCommand(args: string[]): Promise<number> {
     // here re-injects the invoke-path slot and the relaunched SEA process reads
     // it as the command name ("unknown command: atomic-agent"). Plain node keeps
     // the script path at index 1, so slice(1) stays correct there.
-    const relaunchArgs = isSea()
-      ? process.argv.slice(2)
-      : process.argv.slice(1);
+    // `process.execArgv` rides along: without it a dev run started as
+    // `node --import tsx/dist/loader.mjs src/cli/index.ts` re-execs as a bare
+    // `node …/index.ts` and dies with ERR_UNKNOWN_FILE_EXTENSION before the
+    // first frame (node v22.11 has no default type stripping).
+    const relaunchArgs = relaunchArgv({
+      argv: process.argv,
+      execArgv: process.execArgv,
+      isSea: isSea(),
+    });
     const result = spawnSync(process.execPath, relaunchArgs, {
       stdio: "inherit",
     });

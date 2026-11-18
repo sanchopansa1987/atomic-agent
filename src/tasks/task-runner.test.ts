@@ -176,6 +176,42 @@ describe("TaskRunner", () => {
     expect(final?.lastErrorCategory).toBe("transport");
   });
 
+  it("re-arms a recurring task on failure instead of ending it at maxAttempts", async () => {
+    const { runtime } = fakeRuntime({
+      scripts: [
+        () => {
+          throw new TransportError("boom", 502, "http://llama");
+        },
+      ],
+    });
+    const runner = new TaskRunner({
+      store,
+      runtime,
+      sessionLoader: fakeSessionLoader(session),
+      defaultMaxSteps: 5,
+      backoff: { initialMs: 1, maxMs: 10 },
+      enabled: true,
+      runOnCreate: false,
+      sleep: async () => undefined,
+    });
+    // maxAttempts: 1 is the exact shape that killed the daily github scan
+    // (measured 2026-11-10: attempts 4 / max_attempts 1, left terminal and
+    // never dispatched again). A recurring task must survive a bad run.
+    const t = store.create({
+      sessionId: session.id,
+      userMessage: "daily scan",
+      origin: "cli",
+      maxAttempts: 1,
+      schedule: { kind: "cron", expression: "30 7 * * *" },
+    });
+    await runner.drainPending();
+    const final = store.get(t.id);
+    expect(final?.status).toBe("pending");
+    expect(final?.attempts).toBe(0);
+    expect(final?.lastError).toBeNull();
+    expect(final?.scheduledFor).toBeGreaterThan(Date.now());
+  });
+
   it("blocks immediately on grammar failures (no retry, even under maxAttempts)", async () => {
     const { runtime, calls } = fakeRuntime({
       scripts: [

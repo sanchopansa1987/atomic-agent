@@ -480,6 +480,26 @@ export class TaskRunner {
   ): TaskRecord {
     const message = err instanceof Error ? err.message : String(err);
     const failure = { category, message };
+    // Root cause (measured 2026-11-10 in tasks.sqlite): a recurring cron task
+    // that ran out of attempts was left terminal with attempts >= max_attempts
+    // (daily github scan: attempts 4 / max 1). The dispatcher only picks
+    // `pending` rows, so a daily job silently ended for good after one bad run —
+    // twice in three weeks. A recurring task therefore never dies from a
+    // failure: it re-arms to its next firing and the error goes to the log.
+    if (task.recurring && task.schedule) {
+      const next = resolveNextRecurring(task.schedule, Date.now());
+      const requeued = this.options.store.requeueRecurring(task.id, next);
+      this.options.logger?.warn("recurring task failed; re-armed for next firing", {
+        taskId: requeued.id,
+        sessionId: requeued.sessionId,
+        category,
+        attempt: task.attempts,
+        maxAttempts: task.maxAttempts,
+        nextScheduledFor: next,
+        error: message,
+      });
+      return requeued;
+    }
     if (isPermanent(category) || task.attempts >= task.maxAttempts) {
       const terminal = isPermanent(category)
         ? this.options.store.markBlocked(task.id, failure)

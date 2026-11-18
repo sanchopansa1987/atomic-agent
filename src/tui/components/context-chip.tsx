@@ -146,21 +146,27 @@ export function chipBody(usage: ContextUsageView): string {
         : "";
   const tasks =
     usage.pairsCap > 0 ? `${usage.pairs}/${usage.pairsCap} tasks · ` : "";
+  // The cap first, the window second. `agent.conversationMaxTokens` (400k
+  // here) is the point at which `packConversation` starts dropping turns,
+  // and `computeEffectiveConversationCap` clamps it under the window — so it
+  // is the number that actually moves, and the one that predicts forgetting.
+  // Gauged against the raw window instead (1M on this model) the bar sat
+  // under 40% for a whole session and never warned before history went.
+  if (usage.conversationCap !== null && usage.conversationPercent !== null) {
+    return `[${renderProgressBar(
+      usage.conversationPercent,
+      GAUGE_WIDTH,
+    )}] ${tasks}${pair(usage.conversationTokens, usage.conversationCap)} cap${lost}`;
+  }
   if (usage.contextWindow !== null && usage.percent !== null) {
     return `[${renderProgressBar(usage.percent, GAUGE_WIDTH)}] ${tasks}${pair(
       usage.tokens,
       usage.contextWindow,
     )}${lost}`;
   }
-  if (usage.conversationCap === null || usage.conversationPercent === null) {
-    // Nothing has set a scale yet. The total is still worth showing — it
-    // is the only number that says whether this session is big.
-    return `${formatTokens(usage.tokens)}${lost}`;
-  }
-  return `[${renderProgressBar(
-    usage.conversationPercent,
-    GAUGE_WIDTH,
-  )}] ${pair(usage.conversationTokens, usage.conversationCap)} cap${lost}`;
+  // Nothing has set a scale yet. The total is still worth showing — it
+  // is the only number that says whether this session is big.
+  return `${formatTokens(usage.tokens)}${lost}`;
 }
 
 /** The chip's ground: three steps of accent, then violet once trimmed. */
@@ -173,11 +179,11 @@ export function groundFor(usage: ContextUsageView, fusion = false): string {
   // rail, and against a black bar it read as a foreign chip.
   const ground = fusion ? fusionBarGround() : theme.colors.railBackground;
   const accent = fusion ? theme.colors.warnStrong : theme.colors.accent;
-  // The ramp follows the same number the bar does — how full the window
-  // is — so the chip gets louder as room runs out. Unknown fill sits at
-  // the quiet end: that is a readout of a session which has barely
-  // started, not a warning about one that has not.
-  const fill = usage.percent ?? usage.conversationPercent;
+  // The ramp follows the same number the bar does — how full the packed
+  // transcript is against its cap — so the chip gets louder as room runs
+  // out. Unknown fill sits at the quiet end: that is a readout of a
+  // session which has barely started, not a warning about one that has not.
+  const fill = usage.conversationPercent ?? usage.percent;
   if (fill === null || fill < STEP_LOW)
     return mixColor(accent, ground, FADE_LOW);
   if (fill < STEP_MID) return mixColor(accent, ground, FADE_MID);

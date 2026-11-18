@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   agentArgv,
   buildTerminalLaunch,
+  relaunchArgv,
   type TerminalLaunchInput,
 } from "./build-terminal-launch.js";
 
@@ -49,6 +50,48 @@ describe("agentArgv", () => {
     expect(
       agentArgv(input({ argv: ["/usr/local/bin/node", "/opt/a.js"] })),
     ).toContain("tui");
+  });
+});
+
+describe("relaunchArgv", () => {
+  it("keeps the loader flags a dev run started with", () => {
+    // Measured 2026-11-16: a restart dropped `--import tsx/…/loader.mjs` and
+    // re-exec'd `node …/src/cli/index.ts`, which node v22.11 kills with
+    // ERR_UNKNOWN_FILE_EXTENSION before the first frame.
+    expect(
+      relaunchArgv({
+        argv: [
+          "/usr/local/bin/node",
+          "/Users/kst/Desktop/trading_bot/atomic-agent/src/cli/index.ts",
+          "tui",
+          "--cwd",
+          "/Users/kst/Desktop/trading_bot",
+        ],
+        execArgv: [
+          "--max-old-space-size=2730",
+          "--import",
+          "/Users/kst/Desktop/trading_bot/atomic-agent/node_modules/tsx/dist/loader.mjs",
+        ],
+        isSea: false,
+      }),
+    ).toEqual([
+      "--max-old-space-size=2730",
+      "--import",
+      "/Users/kst/Desktop/trading_bot/atomic-agent/node_modules/tsx/dist/loader.mjs",
+      "/Users/kst/Desktop/trading_bot/atomic-agent/src/cli/index.ts",
+      "tui",
+      "--cwd",
+      "/Users/kst/Desktop/trading_bot",
+    ]);
+  });
+
+  it("drops the extra SEA slot and still forwards the user args", () => {
+    expect(
+      relaunchArgv({
+        argv: ["/usr/local/bin/atomic-agent", "/usr/local/bin/atomic-agent", "tui"],
+        isSea: true,
+      }),
+    ).toEqual(["tui"]);
   });
 });
 
