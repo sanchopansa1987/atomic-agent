@@ -55,11 +55,19 @@ export function buildProceduresRecallTool(
               details: { id: procedureId, count: 0, procedures: [] },
             });
           }
+          // A by-id read is the only path that returns the full steps body, so it
+          // is the honest "this procedure was used" signal. Without this call
+          // `use_count` never leaves 0 and `pickAgeDeprecationCandidates`
+          // (`procedure-store.ts`, `AND use_count = 0`) deprecates procedures the
+          // agent actually read. Fire-and-forget: a counter failure must not fail
+          // the read.
+          options.store.bumpUse(procedureId);
           return compressToolResult(
             {
               tool: "memory.procedures.recall",
               status: "ok",
               output: renderProcedureBody(procedure),
+
               details: {
                 count: 1,
                 procedures: [serialiseProcedure(procedure)],

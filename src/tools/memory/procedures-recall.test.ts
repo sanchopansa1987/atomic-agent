@@ -38,6 +38,21 @@ describe("memory.procedures.recall", () => {
     expect(result.details.procedures).toEqual([]);
   });
 
+  it("bumps use_count on a by-id read, so dormancy deprecation spares it", async () => {
+    const created = store.create({
+      activation: "read a procedure once to prove the use counter moves",
+      steps: [{ description: "do the thing" }, { description: "check it landed" }],
+      tags: ["probe"],
+      parentLessonIds: [1],
+      parentMemoryIds: [1],
+    });
+    expect(store.getById(created.id)?.useCount).toBe(0);
+    const tool = buildProceduresRecallTool({ store });
+    const result = await tool.run({ id: created.id }, makeCtx());
+    expect(result.status).toBe("ok");
+    expect(store.getById(created.id)?.useCount).toBe(1);
+  });
+
   it("reads full steps body via { id } (the only path exposing steps[])", async () => {
     const created = store.create({
       activation: "extract function signatures from a TypeScript file",
