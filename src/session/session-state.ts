@@ -225,6 +225,13 @@ export interface SessionState {
    * omitted. Ephemeral, exactly like `graphSection`.
    */
   stemSection?: string | null;
+
+  /**
+   * The spine-file stamp the cached `stemSection` was read from (`stemFileStamp`).
+   * Compared each turn so a re-render of the spine invalidates the cached block
+   * without re-reading the files on every step. Ephemeral, like `stemSection`.
+   */
+  stemStamp?: number;
 }
 
 export function createEmptySessionState(params: {
@@ -395,7 +402,8 @@ export function stripEphemeral(state: SessionState): SessionState {
     state.recalledLessons === undefined &&
     state.recalledProcedures === undefined &&
     state.graphSection === undefined &&
-    state.stemSection === undefined
+    state.stemSection === undefined &&
+    state.stemStamp === undefined
   ) {
     return state;
   }
@@ -406,6 +414,7 @@ export function stripEphemeral(state: SessionState): SessionState {
     recalledProcedures: _p,
     graphSection: _g,
     stemSection: _s,
+    stemStamp: _t,
     ...rest
   } = state;
   return rest;

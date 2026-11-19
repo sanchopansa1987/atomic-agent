@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { estimateTokens, truncateToTokens } from "../prompt/token-budget.js";
@@ -16,7 +16,7 @@ import { estimateTokens, truncateToTokens } from "../prompt/token-budget.js";
  * generator (`scripts/identity_spine.py`), not by history. Everything noisy stays in
  * retrieval, where being linked earns attention only when a query asks for it.
  */
-export const STEM_MAX_TOKENS = 900;
+export const STEM_MAX_TOKENS = 1900;
 
 /** Order is deliberate: what went wrong, what is open, what was decided. */
 const STEM_FILES = ["LESSONS.md", "OPEN.md", "DECISIONS.md"] as const;
@@ -33,9 +33,9 @@ const STEM_FILES = ["LESSONS.md", "OPEN.md", "DECISIONS.md"] as const;
  * line kept is a whole line — a half item reads as a fact that is not there.
  */
 const STEM_FILE_BUDGET: Record<(typeof STEM_FILES)[number], number> = {
-  "LESSONS.md": 420,
-  "OPEN.md": 300,
-  "DECISIONS.md": 170,
+  "LESSONS.md": 890,
+  "OPEN.md": 640,
+  "DECISIONS.md": 360,
 };
 
 /** Keep whole lines only; a cut item is worse than a shorter list. */
@@ -69,6 +69,25 @@ export function recallStemSection(workingDir: string): string | null {
   }
   if (parts.length === 0) return null;
   return truncateToTokens(parts.join("\n\n"), STEM_MAX_TOKENS);
+}
+
+/**
+ * A cheap change signal for the stem: the newest mtime of the three spine files,
+ * rounded to milliseconds. `identity_spine.py` rewrites the files on every render,
+ * so a bump here means the spine changed and the cached block must be re-read.
+ * `0` means no spine file exists (matching `recallStemSection` → `null`).
+ */
+export function stemFileStamp(workingDir: string): number {
+  const dir = join(workingDir, "vault", "agent-memory");
+  let stamp = 0;
+  for (const file of STEM_FILES) {
+    try {
+      stamp = Math.max(stamp, Math.round(statSync(join(dir, file)).mtimeMs));
+    } catch {
+      // A missing file contributes nothing.
+    }
+  }
+  return stamp;
 }
 
 /** Token estimate for the block budget, exported for the tail/ordering tests. */

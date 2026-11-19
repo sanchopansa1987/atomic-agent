@@ -5,7 +5,7 @@ import {
 } from "./fusion-orchestrator-mode.js";
 import { join } from "node:path";
 import { recallGraphSection } from "../memory/graph-recall.js";
-import { recallStemSection } from "../memory/stem-recall.js";
+import { recallStemSection, stemFileStamp } from "../memory/stem-recall.js";
 import {
   appendTurnQualityRow,
   computeTurnQuality,
@@ -2914,8 +2914,15 @@ async function resolveGraphSection(
  * the always-injected pin budget was 80% prose. A missing spine degrades to `null`.
  */
 function resolveStemSection(state: SessionState): SessionState {
-  if (state.stemSection !== undefined) return state;   // already resolved this turn
-  return { ...state, stemSection: recallStemSection(state.workingDir) };
+  const stamp = stemFileStamp(state.workingDir);
+  if (state.stemSection !== undefined && state.stemStamp === stamp) {
+    return state;   // unchanged since the cached read
+  }
+  return {
+    ...state,
+    stemSection: recallStemSection(state.workingDir),
+    stemStamp: stamp,
+  };
 }
 
 async function refreshMemoryContext(
